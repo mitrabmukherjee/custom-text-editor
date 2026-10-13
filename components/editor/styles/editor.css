@@ -560,6 +560,8 @@
   color: var(--tc-color);
   text-decoration: underline;
   text-decoration-color: var(--tc-color);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 1px;
   text-decoration-skip-ink: none;
 }
 
@@ -567,9 +569,14 @@
   color: var(--tc-color);
   text-decoration: line-through;
   text-decoration-color: var(--tc-color);
+  text-decoration-thickness: 1px;
 }
 
-.ProseMirror :is(ins.tc-insertion, del.tc-deletion) :is(.pm-color, .pm-highlight) {
+.ProseMirror span.tc-format {
+  color: var(--tc-color);
+}
+
+.ProseMirror :is(ins.tc-insertion, del.tc-deletion, span.tc-format) :is(.pm-color, .pm-highlight) {
   color: inherit;
 }
 
@@ -604,51 +611,55 @@
   box-shadow: none;
 }
 
+/* Word: solid vertical bar in the margin beside changed lines. */
 .studio-change-bar {
   position: absolute;
-  width: 1px;
-  background: #d4d4d8;
-}
-
-.studio-change-bar--simple {
-  width: 2px;
-  background: #f05454;
+  width: 3px;
+  border-radius: 1px;
 }
 
 .studio-markup-pane {
   position: absolute;
   top: 0;
   bottom: 0;
-  border-left: 1px solid #3f3f46;
-  background: #18181b;
+  border-left: 1px solid #d1d1d1;
+  background: #f3f3f3;
 }
 
 .studio-markup-leaders {
   position: absolute;
   left: 0;
   top: 0;
-  overflow: hidden;
+  overflow: visible;
   pointer-events: none;
 }
 
 .studio-markup-leaders polyline {
   fill: none;
   stroke-width: 1;
-  stroke-dasharray: 1 2;
 }
 
+/* Word revision balloons in the markup column. */
 .studio-balloon {
   position: absolute;
   box-sizing: border-box;
-  padding: 5px 8px;
+  padding: 6px 8px 6px 10px;
   border: 1px solid;
-  border-radius: 2px;
-  background: #1f1f23;
-  color: #d4d4d8;
-  font: 11px/15px ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  border-radius: 0;
+  background: #252526;
+  color: #e4e4e7;
+  font: 9pt/12pt "Segoe UI", ui-sans-serif, system-ui, sans-serif;
   text-align: left;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.35);
   pointer-events: auto;
   cursor: pointer;
+}
+
+.studio-balloon--revision {
+  background: #fff;
+  color: #242424;
+  border-color: #d1d1d1;
+  box-shadow: none;
 }
 
 .studio-balloon-body {
@@ -662,19 +673,28 @@
 
 .studio-balloon-body > strong {
   display: block;
+  margin-bottom: 2px;
   font-weight: 600;
-  color: #f4f4f5;
+  font-size: 8pt;
+  line-height: 11pt;
+  color: #fafafa;
+}
+
+.studio-balloon--revision .studio-balloon-body > strong {
+  color: #242424;
 }
 
 .studio-balloon-body > span {
   display: block;
+  font-size: 8pt;
+  line-height: 11pt;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .studio-balloon--comment {
-  background: #23232a;
-  border-radius: 6px;
+  background: #2d2d30;
+  border-radius: 2px;
 }
 
 .studio-balloon-reply {
@@ -719,6 +739,15 @@
   font-size: 11px;
   line-height: 18px;
   text-align: center;
+}
+
+.studio-balloon--revision .studio-balloon-actions button {
+  background: #e8e8e8;
+  color: #242424;
+}
+
+.studio-balloon--revision .studio-balloon-actions button:hover {
+  background: #d4d4d4;
 }
 
 .studio-balloon-actions button:hover {

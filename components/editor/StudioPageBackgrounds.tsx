@@ -21,7 +21,7 @@ import {
 } from "@/lib/pm/pagination";
 import { displayColor } from "@/lib/pm/textColors";
 import type { CommentThread } from "@/lib/pm/comments";
-import { authorColor } from "@/lib/pm/track-changes";
+import { authorColor, REVISION_BAR_COLOR } from "@/lib/pm/track-changes";
 
 type Props = {
   setup: PageSetup;
@@ -45,6 +45,19 @@ type Props = {
 };
 
 export type BalloonAction = "select" | "accept" | "reject" | "reply" | "resolve" | "reopen" | "delete";
+
+/** Word shows reviewer initials in balloons (e.g. "QC"), not always the full display name. */
+function authorInitials(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) return "?";
+  const parts = trimmed.split(/\s+/).filter(Boolean);
+  if (parts.length === 1) {
+    const one = parts[0];
+    if (one.length <= 4 && /^[A-Z][A-Z0-9.]*$/.test(one)) return one;
+    return one.slice(0, 2).toUpperCase();
+  }
+  return parts.map((p) => p[0]).join("").slice(0, 4).toUpperCase();
+}
 
 const BALLOON_INSET = 14;
 const BALLOON_GAP = 8;
@@ -318,7 +331,7 @@ function Balloon({
   const resolved = isComment && !!thread?.resolved;
   return (
     <div
-      className={`studio-balloon${isComment ? " studio-balloon--comment" : ""}${resolved ? " studio-balloon--resolved" : ""}`}
+      className={`studio-balloon${isComment ? " studio-balloon--comment" : " studio-balloon--revision"}${resolved ? " studio-balloon--resolved" : ""}`}
       data-balloon-id={balloon.id}
       style={style}
       onContextMenu={(e) => {
@@ -328,7 +341,7 @@ function Balloon({
       }}
     >
       <button type="button" className="studio-balloon-body" onClick={() => act("select")}>
-        <strong>{balloon.authorName || "Unknown"}</strong>
+        <strong>{authorInitials(balloon.authorName || "Unknown")}</strong>
         {isComment && thread ? (
           <>
             <span>{thread.text}</span>
@@ -419,6 +432,7 @@ function MarkupPane({
             left: x,
             width: width - 2 * BALLOON_INSET,
             borderColor: authorColor(balloon.authorId || "unknown"),
+            borderLeftWidth: 3,
           }}
           onAction={onAction}
           onMenu={onMenu}
@@ -475,8 +489,13 @@ export function StudioPageBackgrounds({
           {changeBarsFor(changedLines, i).map((bar) => (
             <span
               key={bar.top}
-              className={`studio-change-bar${simpleMarkup ? " studio-change-bar--simple" : ""}`}
-              style={{ left: Math.max(2, barX), top: bar.top, height: bar.bottom - bar.top }}
+              className="studio-change-bar"
+              style={{
+                left: Math.max(2, barX),
+                top: bar.top,
+                height: bar.bottom - bar.top,
+                background: REVISION_BAR_COLOR,
+              }}
             />
           ))}
           {markupWidth ? (

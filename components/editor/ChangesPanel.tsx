@@ -3,8 +3,8 @@
 import { authorColor, type ChangeType, type TrackedChange } from "@/lib/pm/track-changes";
 
 const VERB: Record<ChangeType, string> = {
-  insertion: "inserted",
-  deletion: "deleted",
+  insertion: "formatted",
+  deletion: "formatted",
   format: "formatted",
   paragraph: "formatted",
 };

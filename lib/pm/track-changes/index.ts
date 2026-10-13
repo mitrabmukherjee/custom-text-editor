@@ -22,7 +22,7 @@ export {
   type ChangeType,
   type TrackedChange,
 } from "./changes";
-export { authorColor } from "./colors";
+export { authorColor, REVISION_BAR_COLOR } from "./colors";
 export {
   FORMAT_MARK_NAMES,
   describeFormatChange,

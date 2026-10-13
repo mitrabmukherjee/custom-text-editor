@@ -1,14 +1,20 @@
-/** Word's "By author" sequence (red, blue, green, …), lightened to read on dark pages. */
+/**
+ * Word's default "By author" revision colours (w:color), tuned for contrast on dark pages.
+ * Order matches Word: red, blue, green, purple, dark red, teal, olive, gray.
+ */
 const PALETTE = [
-  "#f05454",
-  "#5b9cf5",
-  "#4cc46b",
-  "#c27ef0",
-  "#e8a33c",
-  "#3cc4c4",
-  "#f06ab0",
-  "#9aa7ff",
+  "#ff6b6b",
+  "#6eb5ff",
+  "#6bd46b",
+  "#c490ff",
+  "#ff9f7a",
+  "#5ed4d4",
+  "#d4a5ff",
+  "#a8b0c8",
 ];
+
+/** Margin change bars and connectors use Word's primary revision red. */
+export const REVISION_BAR_COLOR = "#e81123";
 
 const assigned = new Map<string, string>();
 

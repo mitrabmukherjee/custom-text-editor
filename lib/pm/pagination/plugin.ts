@@ -42,7 +42,7 @@ export type ChangeBalloon = {
   left: number;
   authorId: string;
   authorName: string;
-  /** Body line under the author, e.g. "Inserted: …" or "Formatted: Font: Italic". */
+  /** Body line under the author, e.g. "Formatted: …" (Word All Markup wording). */
   label: string;
 };
 
@@ -296,8 +296,7 @@ function balloonLabel(type: ChangeBalloon["changeType"], text: string, descripti
     return s.length > 72 ? `${s.slice(0, 72)}\u2026` : s || "(whitespace)";
   };
   if (type === "format" || type === "paragraph") return `Formatted: ${description ?? ""}`;
-  if (type === "insertion") return `Inserted: ${snippet(text)}`;
-  return `Deleted: ${snippet(text)}`;
+  return `Formatted: ${snippet(text)}`;
 }
 
 /** Change bars and balloons for every tracked change, placed with the lines' final page positions. */
@@ -401,9 +400,20 @@ function sameTabs(a: TabWidth[], b: TabWidth[]) {
   );
 }
 
+/**
+ * Maximum number of successive tab-width dispatches before we accept the current
+ * widths and proceed to page-break computation.  Setting a tab's width can change
+ * text wrapping which changes subsequent tabs' x-positions which changes their widths —
+ * an oscillation that never converges.  Capping at a small number stops the loop while
+ * still giving tabs two or three rounds to settle into a reasonable position.
+ */
+const MAX_TAB_ROUNDS = 4;
+
 class PaginationView {
   private frame = 0;
   private lastSignature = "";
+  private tabRounds = 0;
+  private lastDocSize = 0;
   private readonly resizeObserver: ResizeObserver;
 
   constructor(
@@ -458,7 +468,7 @@ class PaginationView {
     view.state.doc.descendants((node, pos) => {
       if (node.type.name !== "tab") return true;
       const el = view.nodeDOM(pos) as HTMLElement | null;
-      const block = el?.closest<HTMLElement>("p, h1, h2, h3");
+      const block = el?.closest<HTMLElement>("p, h1, h2, h3, h4, h5, h6");
       if (!el || !block) return false;
       if (!formats.has(block)) {
         const raw = block.getAttribute("data-pm-format");
@@ -470,7 +480,16 @@ class PaginationView {
       return false;
     });
     const current = paginationKey.getState(view.state);
-    if (!current || sameTabs(current.tabs, tabs)) return false;
+    if (!current || sameTabs(current.tabs, tabs)) {
+      this.tabRounds = 0;
+      return false;
+    }
+    // If tabs keep oscillating (due to wrapping feedback), accept current widths and move on.
+    if (this.tabRounds >= MAX_TAB_ROUNDS) {
+      this.tabRounds = 0;
+      return false;
+    }
+    this.tabRounds += 1;
     this.dispatch({ tabs });
     return true;
   }
@@ -478,6 +497,12 @@ class PaginationView {
   private measure() {
     const { view } = this;
     const dom = view.dom as HTMLElement;
+    // Reset the tab-round counter whenever the document changes size (new doc loaded).
+    const docSize = view.state.doc.content.size;
+    if (docSize !== this.lastDocSize) {
+      this.lastDocSize = docSize;
+      this.tabRounds = 0;
+    }
     if (dom.querySelector("tbody col")) {
       view.state.doc.descendants((node, pos) => {
         if (node.type.spec.tableRole !== "table") return true;

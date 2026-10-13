@@ -108,7 +108,6 @@ export function TranscriptEditor(props: TranscriptEditorProps) {
   const loadedContent = useRef<string | undefined>(undefined);
   const [controller, setController] = useState<EditorController | null>(null);
   const [, setVersion] = useState(0);
-  const [pageCount, setPageCount] = useState(1);
   const [pages, setPages] = useState<PageInfo[]>([]);
   const [lines, setLines] = useState<LinePlacement[]>([]);
   const [changedLines, setChangedLines] = useState<LinePlacement[]>([]);
@@ -142,7 +141,6 @@ export function TranscriptEditor(props: TranscriptEditorProps) {
         pageSetup: p.pageSetup ?? LETTER_PAGE_SETUP,
         pinPageSetup: !!p.pageSetup,
         onLayout: (layout) => {
-          setPageCount(layout.pageCount);
           setPages(layout.pages);
           setLines(layout.lines);
           setChangedLines(layout.changedLines);
@@ -282,6 +280,9 @@ export function TranscriptEditor(props: TranscriptEditorProps) {
 
   const setup = controller?.getPageSetup() ?? pageSetup ?? LETTER_PAGE_SETUP;
   const layout = controller?.getLayout() ?? null;
+  // Read pageCount directly from ProseMirror state so page backgrounds update on the same
+  // render cycle as the pagination dispatch — no extra frame of delay.
+  const pageCount = controller?.getPageCount() ?? 1;
   const firstPageTop = controller?.getPageFrame().top ?? setup.marginTop;
   const shownBalloons = simpleMarkup ? balloons.filter((b) => b.changeType === "comment") : balloons;
   const markupWidth =
