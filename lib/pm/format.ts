@@ -1,0 +1,346 @@
+import type { PageSetup } from "./pagination/pageSetup";
+
+/** Word's single line height is about 1.15x the font size for Times New Roman and Arial. */
+export const SINGLE_LINE_FACTOR = 1.15;
+
+export const PT_TO_PX = 96 / 72;
+
+export type TextAlign = "left" | "center" | "right" | "justify";
+
+export type TabStop = { pos: number; align: "left" | "center" | "right" | "decimal" };
+
+/** Resolved Word paragraph formatting. Lengths are CSS px, font sizes pt. */
+export type ParagraphFormat = {
+  align?: TextAlign;
+  indentLeft?: number;
+  indentRight?: number;
+  /** Positive: first-line indent. Negative: hanging indent. */
+  indentFirstLine?: number;
+  spaceBefore?: number;
+  spaceAfter?: number;
+  /** "auto": `lineValue` is a multiple of single spacing; otherwise px. */
+  lineRule?: "auto" | "exact" | "atLeast";
+  lineValue?: number;
+  /** Font of the paragraph mark; sets the height of empty lines. */
+  fontFamily?: string;
+  fontSize?: number;
+  tabs?: TabStop[];
+  widowControl?: boolean;
+  keepNext?: boolean;
+  keepLines?: boolean;
+  suppressLineNumbers?: boolean;
+  /** Start the paragraph on a new page. */
+  pageBreakBefore?: boolean;
+  /** Ignore spacing between this and adjacent paragraphs of the same style. */
+  contextualSpacing?: boolean;
+  /** Word paragraph style id (e.g. "Heading1"); see `DocumentLayout.styles`. */
+  styleId?: string;
+};
+
+/** A tracked paragraph formatting revision (`w:pPrChange`), stored on the paragraph. */
+export type ParagraphChange = {
+  id: string;
+  authorId: string;
+  authorName: string;
+  date: string;
+  /** Format before the revision; rejecting restores it. */
+  old: ParagraphFormat | null;
+  /** Block type before the revision, when a style change turned e.g. a paragraph into a heading. */
+  block?: { type: string; level?: number };
+  description: string;
+};
+
+type HFRunStyle = {
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  /** "#rrggbb". */
+  color?: string;
+  fontFamily?: string;
+  fontSize?: number;
+};
+
+export type HFRun =
+  | ({ kind: "text"; text: string } & HFRunStyle)
+  | ({ kind: "field"; field: "PAGE" | "NUMPAGES" } & HFRunStyle)
+  | { kind: "tab" };
+
+/** Position of a Word frame (`w:framePr`). Lengths are px. */
+export type HFFrame = {
+  hAnchor: "page" | "margin" | "text";
+  vAnchor: "page" | "margin" | "text";
+  /** Offset from the anchor, used when there is no alignment. */
+  x?: number;
+  y?: number;
+  xAlign?: "left" | "center" | "right" | "inside" | "outside";
+  yAlign?: "top" | "center" | "bottom" | "inside" | "outside" | "inline";
+  width?: number;
+  height?: number;
+};
+
+export type HFParagraph = {
+  format: ParagraphFormat;
+  runs: HFRun[];
+  /** Positioned frame (w:framePr): drawn but takes no space. */
+  floating?: boolean;
+  frame?: HFFrame;
+};
+
+export type HeaderFooterSet = {
+  default?: HFParagraph[];
+  first?: HFParagraph[];
+  /** Even pages when `DocumentLayout.evenAndOddHeaders` is on. */
+  even?: HFParagraph[];
+};
+
+export type LineNumbering = {
+  countBy: number;
+  /** Number shown on the first counted line. */
+  start: number;
+  restart: "newPage" | "newSection" | "continuous";
+  /** Gap between the number and the text, px. */
+  distance: number;
+  fontFamily?: string;
+  fontSize?: number;
+};
+
+/** How a section starts (`w:type` of `w:sectPr`). */
+export type SectionStart = "nextPage" | "continuous" | "evenPage" | "oddPage";
+
+/** Page layout of one Word section (`w:sectPr`). */
+export type SectionLayout = {
+  page?: PageSetup;
+  headerDistance?: number;
+  footerDistance?: number;
+  headers?: HeaderFooterSet;
+  footers?: HeaderFooterSet;
+  titlePage?: boolean;
+  lineNumbers?: LineNumbering | null;
+  /** Restart page numbering at this value. */
+  pageNumberStart?: number;
+  /** Text columns (`w:cols`); 1 when absent. */
+  columns?: { count: number; space: number };
+};
+
+/** A paragraph or character style from `styles.xml`, flattened along `basedOn`. */
+export type StyleDefinition = {
+  id: string;
+  name: string;
+  type: "paragraph" | "character";
+  format?: ParagraphFormat;
+  /** Character formatting the style adds (RunFormat fields). */
+  run?: Record<string, unknown>;
+  /** Style of the paragraph Enter creates after this one. */
+  next?: string;
+  /** Shown in the styles gallery (Word's `w:qFormat`). */
+  gallery?: boolean;
+};
+
+/**
+ * Document-level Word layout, stored on the doc node's `layout` attribute. Its section
+ * fields describe the last section; earlier sections live on `section_break` nodes.
+ */
+export type DocumentLayout = SectionLayout & {
+  defaultTabStop?: number;
+  /** Fraction of a space that justified lines may give up to fit another word. */
+  justifyShrink?: number;
+  /** Separate headers/footers on even pages (`w:evenAndOddHeaders`). */
+  evenAndOddHeaders?: boolean;
+  /** Style definitions, for the styles gallery. */
+  styles?: StyleDefinition[];
+};
+
+/** Which page of a section a page is, for picking its header/footer. */
+export type PageInfo = {
+  /** 0-based index of the section the page starts in. */
+  section: number;
+  /** The page is the first page of its section. */
+  first: boolean;
+  /** 1-based displayed page number. */
+  number: number;
+};
+
+/** CSS variable carrying `DocumentLayout.justifyShrink` to justified paragraphs. */
+export const JUSTIFY_SHRINK_VAR = "--pm-justify-shrink";
+
+/** Effective top/bottom margins of one page (Word grows them to fit the header/footer). */
+export type PageFrame = { top: number; bottom: number };
+
+const SERIF = /times|georgia|garamond|cambria|book|serif|palatino|century/i;
+const MONO = /courier|consolas|mono|lucida console/i;
+
+export function fontStack(family: string): string {
+  const generic = MONO.test(family) ? "monospace" : SERIF.test(family) ? "serif" : "sans-serif";
+  return `"${family.replace(/"/g, "")}", ${generic}`;
+}
+
+function round(n: number) {
+  return Math.round(n * 1000) / 1000;
+}
+
+/** Advance width of U+0020 in em (hmtx / unitsPerEm). */
+const SPACE_EM: [RegExp, number][] = [
+  [/arial|helvetica|arimo|liberation sans/i, 0.2778],
+  [/calibri|carlito/i, 0.2261],
+  [/cambria|caladea/i, 0.2197],
+  [/georgia/i, 0.2412],
+  [/verdana/i, 0.3516],
+  [/tahoma/i, 0.3125],
+  [/segoe ui/i, 0.2744],
+  [/courier|consolas|mono/i, 0.6],
+];
+
+function spaceEm(family: string | undefined): number {
+  if (family) for (const [re, em] of SPACE_EM) if (re.test(family)) return em;
+  return 0.25;
+}
+
+/** CSS line-height for a paragraph format, or undefined for the stylesheet default. */
+export function lineHeightCss(format: ParagraphFormat): string | undefined {
+  const { lineRule, lineValue } = format;
+  if (!lineRule || lineValue === undefined) {
+    return format.fontSize ? String(SINGLE_LINE_FACTOR) : undefined;
+  }
+  if (lineRule === "auto") return String(round(SINGLE_LINE_FACTOR * lineValue));
+  if (lineRule === "exact") return `${round(lineValue)}px`;
+  return `max(${SINGLE_LINE_FACTOR}em, ${round(lineValue)}px)`;
+}
+
+type CssDeclarations = Partial<
+  Record<
+    | "paddingLeft"
+    | "paddingRight"
+    | "textIndent"
+    | "paddingTop"
+    | "paddingBottom"
+    | "fontFamily"
+    | "fontSize"
+    | "lineHeight"
+    | "wordSpacing",
+    string
+  >
+> & { textAlign?: TextAlign };
+
+/**
+ * CSS for a formatted paragraph. Word spacing is additive, so it maps to padding, not margins.
+ * Justified paragraphs get negative word spacing scaled by `JUSTIFY_SHRINK_VAR`: lines then
+ * break as if spaces were narrower, and justification stretches them back, like Word's
+ * space shrinking.
+ */
+export function paragraphStyle(format: ParagraphFormat | null | undefined): CssDeclarations {
+  if (!format) return {};
+  const css: CssDeclarations = {};
+  if (format.align) css.textAlign = format.align;
+  if (format.align === "justify") {
+    css.wordSpacing = `calc(var(${JUSTIFY_SHRINK_VAR}, 0) * -${spaceEm(format.fontFamily)}em)`;
+  }
+  if (format.indentLeft) css.paddingLeft = `${round(format.indentLeft)}px`;
+  if (format.indentRight) css.paddingRight = `${round(format.indentRight)}px`;
+  if (format.indentFirstLine) css.textIndent = `${round(format.indentFirstLine)}px`;
+  if (format.spaceBefore) css.paddingTop = `${round(format.spaceBefore)}px`;
+  if (format.spaceAfter) css.paddingBottom = `${round(format.spaceAfter)}px`;
+  if (format.fontFamily) css.fontFamily = fontStack(format.fontFamily);
+  if (format.fontSize) css.fontSize = `${round(format.fontSize)}pt`;
+  const lh = lineHeightCss(format);
+  if (lh) css.lineHeight = lh;
+  return css;
+}
+
+export function runStyle(run: {
+  fontFamily?: string | null;
+  fontSize?: number | null;
+}): CssDeclarations {
+  const css: CssDeclarations = {};
+  if (run.fontFamily) css.fontFamily = fontStack(run.fontFamily);
+  if (run.fontSize) css.fontSize = `${round(run.fontSize)}pt`;
+  return css;
+}
+
+function toCssText(css: CssDeclarations): string {
+  return Object.entries(css)
+    .map(([k, v]) => `${k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}: ${v}`)
+    .join("; ");
+}
+
+export function paragraphCss(format: ParagraphFormat | null | undefined): string {
+  return toCssText(paragraphStyle(format));
+}
+
+export function runCss(run: { fontFamily?: string | null; fontSize?: number | null }): string {
+  return toCssText(runStyle(run));
+}
+
+/** Height in px of one line of a header/footer paragraph (assumes it does not wrap). */
+function hfParagraphHeight(p: HFParagraph): number {
+  if (p.floating) return 0;
+  const sizes = p.runs
+    .map((r) => (r.kind === "tab" ? undefined : r.fontSize))
+    .filter((s): s is number => !!s);
+  const fontPt = Math.max(p.format.fontSize ?? 10, ...sizes);
+  const single = fontPt * PT_TO_PX * SINGLE_LINE_FACTOR;
+  const { lineRule, lineValue } = p.format;
+  let line = single;
+  if (lineRule === "auto" && lineValue) line = single * lineValue;
+  else if (lineRule === "exact" && lineValue) line = lineValue;
+  else if (lineRule === "atLeast" && lineValue) line = Math.max(single, lineValue);
+  return line + (p.format.spaceBefore ?? 0) + (p.format.spaceAfter ?? 0);
+}
+
+export function headerFooterHeight(paragraphs: HFParagraph[] | undefined): number {
+  return (paragraphs ?? []).reduce((sum, p) => sum + hfParagraphHeight(p), 0);
+}
+
+/** Which header/footer of a section applies to a page. */
+export function headerFooterFor(
+  set: HeaderFooterSet | undefined,
+  section: SectionLayout | null | undefined,
+  page: Pick<PageInfo, "first" | "number">,
+  evenAndOdd = false,
+): HFParagraph[] | undefined {
+  if (!set) return undefined;
+  if (page.first && section?.titlePage) return set.first;
+  if (evenAndOdd && page.number % 2 === 0) return set.even;
+  return set.default;
+}
+
+/**
+ * Layout of every section in order: the `section` attributes of the document's
+ * `section_break` nodes, then the document layout (the last section).
+ */
+export function sectionLayouts(
+  layout: DocumentLayout | null | undefined,
+  breaks: (SectionLayout | null)[] = [],
+): SectionLayout[] {
+  return [...breaks.map((s) => s ?? {}), layout ?? {}];
+}
+
+/** Per-page effective margins: the body never overlaps the header or footer. */
+export function pageFrames(
+  setup: PageSetup,
+  layout: DocumentLayout | null | undefined,
+  sections: SectionLayout[] = sectionLayouts(layout),
+): (page: PageInfo) => PageFrame {
+  if (!layout) return () => ({ top: setup.marginTop, bottom: setup.marginBottom });
+  const cache = new Map<string, PageFrame>();
+  return (page) => {
+    const section = sections[Math.min(page.section, sections.length - 1)] ?? layout;
+    const parity = layout.evenAndOddHeaders ? page.number % 2 : 1;
+    const key = `${page.section}:${page.first}:${parity}`;
+    const cached = cache.get(key);
+    if (cached) return cached;
+    const marginTop = section.page?.marginTop ?? setup.marginTop;
+    const marginBottom = section.page?.marginBottom ?? setup.marginBottom;
+    const header = headerFooterFor(section.headers, section, page, layout.evenAndOddHeaders);
+    const footer = headerFooterFor(section.footers, section, page, layout.evenAndOddHeaders);
+    const frame = {
+      top: header?.length
+        ? Math.max(marginTop, (section.headerDistance ?? 0) + headerFooterHeight(header))
+        : marginTop,
+      bottom: footer?.length
+        ? Math.max(marginBottom, (section.footerDistance ?? 0) + headerFooterHeight(footer))
+        : marginBottom,
+    };
+    cache.set(key, frame);
+    return frame;
+  };
+}

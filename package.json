@@ -1,0 +1,44 @@
+{
+  "name": "@steora/transcript-editor",
+  "version": "0.2.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3001",
+    "build": "next build",
+    "start": "next start -p 3001",
+    "lint": "eslint",
+    "typecheck": "next typegen && tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@xmldom/xmldom": "^0.9.12",
+    "docx": "^9.10.0",
+    "jszip": "^3.10.2",
+    "next": "16.2.11",
+    "prosemirror-commands": "^1.7.2",
+    "prosemirror-dropcursor": "^1.8.4",
+    "prosemirror-gapcursor": "^1.4.1",
+    "prosemirror-history": "^1.5.1",
+    "prosemirror-inputrules": "^1.5.1",
+    "prosemirror-keymap": "^1.2.3",
+    "prosemirror-model": "^1.25.12",
+    "prosemirror-schema-list": "^1.5.1",
+    "prosemirror-state": "^1.4.4",
+    "prosemirror-tables": "^1.8.5",
+    "prosemirror-transform": "^1.12.2",
+    "prosemirror-view": "^1.42.6",
+    "react": "19.2.3",
+    "react-dom": "19.2.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.11",
+    "tailwindcss": "^4",
+    "typescript": "^5",
+    "vitest": "^3.1.2"
+  }
+}

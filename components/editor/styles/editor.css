@@ -1,0 +1,810 @@
+/* —— Editor shell: Word-like pages —— */
+.transcript-editor-root {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 12rem;
+  height: 100%;
+  background: #09090b;
+}
+
+.transcript-editor-root .transcript-editor-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.transcript-editor-root .transcript-editor-scroll {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  background: #09090b;
+  padding: 1.5rem 1rem 2rem;
+}
+
+.transcript-editor-root .paper-zoom {
+  margin: 0 auto;
+}
+
+/* Zoom scales the laid-out pages; pagination measures in unscaled CSS px. */
+.transcript-editor-root .paper {
+  position: relative;
+  width: calc(var(--page-width) + var(--markup-width, 0px));
+  margin: 0;
+  transform-origin: 0 0;
+}
+
+/* —— Find highlights —— */
+.ProseMirror .pm-find-match {
+  background: rgb(250 204 21 / 0.3);
+}
+
+.ProseMirror .pm-find-match--current {
+  background: rgb(249 115 22 / 0.65);
+  outline: 1px solid rgb(251 146 60);
+}
+
+/* —— Ruler: sticky above the pages, aligned with the (zoomed) page —— */
+.studio-ruler-bar {
+  position: sticky;
+  /* Sticky offsets are measured inside the scroll container's padding. */
+  top: -1.5rem;
+  z-index: 20;
+  box-sizing: border-box;
+  width: max-content;
+  min-width: calc(100% + 2rem);
+  margin: -1.5rem -1rem 0.75rem;
+  padding: 3px 1rem;
+  border-bottom: 1px solid #27272a;
+  background: #111113;
+}
+
+.studio-ruler-bar > div {
+  margin: 0 auto;
+}
+
+.studio-ruler {
+  position: relative;
+  user-select: none;
+  touch-action: none;
+}
+
+.studio-ruler-strip {
+  position: relative;
+  background: #27272a;
+  cursor: default;
+}
+
+.studio-ruler-scale {
+  display: block;
+  pointer-events: none;
+}
+
+.studio-ruler-margin {
+  fill: #18181b;
+}
+
+.studio-ruler-tick {
+  fill: #71717a;
+}
+
+.studio-ruler-number {
+  fill: #a1a1aa;
+  font: 9px ui-sans-serif, system-ui, sans-serif;
+}
+
+.studio-ruler-marker {
+  position: absolute;
+  display: flex;
+  transform: translateX(-50%);
+  color: #e4e4e7;
+  cursor: ew-resize;
+}
+
+.studio-ruler-shape {
+  fill: #d4d4d8;
+  stroke: #18181b;
+  stroke-width: 1;
+}
+
+.studio-ruler-marker:hover .studio-ruler-shape {
+  fill: #fff;
+}
+
+.studio-ruler--disabled .studio-ruler-marker {
+  pointer-events: none;
+  opacity: 0.5;
+}
+
+.studio-ruler-tab--removing {
+  opacity: 0.3;
+}
+
+.studio-ruler-tab-selector {
+  position: absolute;
+  top: 50%;
+  right: calc(100% + 8px);
+  display: flex;
+  padding: 3px;
+  transform: translateY(-50%);
+  border: 1px solid #3f3f46;
+  border-radius: 2px;
+  color: #e4e4e7;
+  background: #18181b;
+}
+
+.studio-ruler-tab-selector:hover {
+  background: #27272a;
+}
+
+/* —— Navigation pane thumbnails —— */
+.studio-nav-thumb {
+  background: #141414;
+}
+
+.studio-zoom-slider {
+  accent-color: #a1a1aa;
+  height: 4px;
+}
+
+.studio-page-stack {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.studio-page-surface {
+  position: absolute;
+  left: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+  background-color: #141414;
+  border: 1px solid #52525b;
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 0.35),
+    0 12px 32px rgb(0 0 0 / 0.45);
+}
+
+.studio-page-number {
+  position: absolute;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-family: "Times New Roman", Times, "Liberation Serif", serif;
+  font-size: 10pt;
+  line-height: 16px;
+  color: #a1a1aa;
+}
+
+.transcript-editor-root .transcript-editor-mount {
+  position: relative;
+  z-index: 1;
+  width: var(--page-width);
+}
+
+.transcript-editor-root .ProseMirror {
+  box-sizing: border-box;
+  width: var(--page-width);
+  min-height: var(--page-height);
+  margin: 0;
+  padding: var(--margin-top) var(--margin-right) var(--margin-bottom) var(--margin-left);
+  outline: none;
+  font-family: "Times New Roman", Times, "Liberation Serif", serif;
+  font-size: 12pt;
+  line-height: 24pt;
+  color: #f4f4f5;
+  background: transparent;
+}
+
+.transcript-editor-root .ProseMirror p,
+.transcript-editor-root .ProseMirror li p {
+  margin: 0;
+  padding: 0;
+}
+
+/* Lists: Word's 0.5" per level; the default multilevel list numbers 1. a. i. */
+.transcript-editor-root .ProseMirror :is(ol, ul) {
+  margin: 0;
+  padding: 0 0 0 0.5in;
+}
+
+.transcript-editor-root .ProseMirror ul {
+  list-style-type: disc;
+}
+
+.transcript-editor-root .ProseMirror ul ul {
+  list-style-type: circle;
+}
+
+.transcript-editor-root .ProseMirror ul ul ul {
+  list-style-type: square;
+}
+
+.transcript-editor-root .ProseMirror ol {
+  list-style-type: decimal;
+}
+
+.transcript-editor-root .ProseMirror ol ol {
+  list-style-type: lower-alpha;
+}
+
+.transcript-editor-root .ProseMirror ol ol ol {
+  list-style-type: lower-roman;
+}
+
+.transcript-editor-root .ProseMirror li::marker {
+  font-variant-numeric: normal;
+}
+
+/* Legal outline numbering: 1. 1.1. 1.1.1. (nested lists without their own format follow). */
+.transcript-editor-root .ProseMirror ol[data-num-format="legal"],
+.transcript-editor-root .ProseMirror ol[data-num-format="legal"] ol:not([data-num-format]) {
+  list-style: none;
+}
+
+.transcript-editor-root .ProseMirror ol[data-num-format="legal"] ol:not([data-num-format]) {
+  counter-reset: pm-legal;
+}
+
+.transcript-editor-root .ProseMirror ol[data-num-format="legal"] > li,
+.transcript-editor-root .ProseMirror ol[data-num-format="legal"] ol:not([data-num-format]) > li {
+  position: relative;
+  counter-increment: pm-legal;
+}
+
+.transcript-editor-root .ProseMirror ol[data-num-format="legal"] > li::before,
+.transcript-editor-root .ProseMirror ol[data-num-format="legal"] ol:not([data-num-format]) > li::before {
+  position: absolute;
+  right: 100%;
+  padding-right: 0.4em;
+  white-space: nowrap;
+  content: counters(pm-legal, ".") ".";
+}
+
+/* Headings without Word formatting (typed with "# "). */
+.transcript-editor-root .ProseMirror :is(h1, h2, h3, h4, h5, h6):not([data-pm-format]) {
+  font-weight: 700;
+}
+
+.transcript-editor-root .ProseMirror h1:not([data-pm-format]) {
+  font-size: 16pt;
+}
+
+.transcript-editor-root .ProseMirror h2:not([data-pm-format]) {
+  font-size: 13pt;
+}
+
+.transcript-editor-root .ProseMirror p.is-editor-empty:first-child::before {
+  color: #71717a;
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+
+.pm-page-break-widget {
+  display: block;
+  user-select: none;
+  pointer-events: none;
+}
+
+/* —— Tables (Word: 0.08" cell margins, single gridlines) —— */
+/* Like Word, wide tables overhang the margin rather than scroll. */
+.transcript-editor-root .ProseMirror .tableWrapper {
+  overflow: visible;
+}
+
+.transcript-editor-root .ProseMirror table.pm-table {
+  border-collapse: collapse;
+  table-layout: fixed;
+  margin: 0;
+}
+
+.transcript-editor-root .ProseMirror .pm-table :is(td, th) {
+  position: relative;
+  box-sizing: border-box;
+  padding: 0 7px;
+  border: 1px solid #a1a1aa;
+  vertical-align: top;
+  text-align: left;
+  font-weight: inherit;
+}
+
+/* Word's "View Gridlines" for tables without borders. */
+.transcript-editor-root .ProseMirror .pm-table[data-borderless] :is(td, th) {
+  border: 1px dashed #3f3f46;
+}
+
+.transcript-editor-root .ProseMirror .pm-table tr.pm-page-break-widget {
+  display: table-row;
+}
+
+.transcript-editor-root .ProseMirror .pm-table td.pm-page-break-cell {
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+
+.transcript-editor-root .ProseMirror .column-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -2px;
+  bottom: 0;
+  z-index: 20;
+  width: 4px;
+  background: #0ea5e9;
+  pointer-events: none;
+}
+
+.transcript-editor-root .ProseMirror.resize-cursor {
+  cursor: col-resize;
+}
+
+.transcript-editor-root .ProseMirror .selectedCell::after {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  background: rgb(14 165 233 / 0.25);
+  content: "";
+  pointer-events: none;
+}
+
+/* —— Hyperlinks and pictures —— */
+.transcript-editor-root .ProseMirror a.pm-link {
+  color: #7cb7ff;
+  text-decoration: underline;
+  cursor: text;
+}
+
+.transcript-editor-root .ProseMirror .pm-image-wrap {
+  position: relative;
+  display: inline-block;
+  line-height: 0;
+}
+
+.transcript-editor-root .ProseMirror .pm-image-wrap.ProseMirror-selectednode {
+  outline: 1px solid #0ea5e9;
+}
+
+.transcript-editor-root .ProseMirror .pm-image-handle {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  display: none;
+  width: 8px;
+  height: 8px;
+  border: 1px solid #0ea5e9;
+  background: #fff;
+  cursor: nwse-resize;
+}
+
+.transcript-editor-root .ProseMirror .pm-image-wrap.ProseMirror-selectednode .pm-image-handle {
+  display: block;
+}
+
+/* —— Word formatting (imported DOCX) ——
+   Word hangs trailing spaces past the margin and only kerns runs with w:kern. */
+.transcript-editor-root .paper--word .ProseMirror {
+  font-family: "Times New Roman", Times, "Liberation Serif", serif;
+  font-size: 10pt;
+  line-height: 1.15;
+  white-space: pre-wrap;
+  font-kerning: none;
+}
+
+.transcript-editor-root .ProseMirror [data-pm-format] {
+  margin: 0;
+  font-weight: normal;
+}
+
+.ProseMirror span.pm-tab {
+  display: inline-block;
+  text-indent: 0;
+}
+
+.studio-hf--editable {
+  cursor: text;
+}
+
+.studio-hf--editable:hover {
+  outline: 1px dashed #a1a1aa;
+}
+
+.studio-hf {
+  position: absolute;
+  color: #d4d4d8;
+}
+
+.studio-hf-paragraph {
+  position: relative;
+  white-space: pre-wrap;
+}
+
+.studio-hf-tabbed {
+  position: absolute;
+  top: 0;
+  white-space: pre;
+}
+
+.studio-line-number {
+  position: absolute;
+  white-space: nowrap;
+  color: #a1a1aa;
+}
+
+/* —— Hard page break node —— */
+.ProseMirror hr.pm-page-break-node {
+  position: relative;
+  height: 0;
+  margin: 12px 0;
+  border: 0;
+  border-top: 1px dashed #71717a;
+  overflow: visible;
+}
+
+.ProseMirror hr.pm-page-break-node::after {
+  content: "Page break";
+  position: absolute;
+  left: 50%;
+  top: -0.7em;
+  transform: translateX(-50%);
+  padding: 0 0.5em;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 10px;
+  color: #71717a;
+  background: #141414;
+}
+
+.ProseMirror hr.pm-page-break-node.ProseMirror-selectednode {
+  border-top-color: #60a5fa;
+}
+
+/* —— Section break: takes no space, like Word's formatting mark —— */
+.ProseMirror hr.pm-section-break-node {
+  position: relative;
+  height: 0;
+  margin: 0;
+  border: 0;
+  overflow: visible;
+}
+
+.ProseMirror hr.pm-section-break-node::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -1px;
+  border-top: 2px double #71717a;
+}
+
+.ProseMirror hr.pm-section-break-node::after {
+  content: attr(data-label);
+  position: absolute;
+  left: 50%;
+  top: -0.7em;
+  transform: translateX(-50%);
+  padding: 0 0.5em;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 10px;
+  line-height: 1.4;
+  color: #a1a1aa;
+  background: #141414;
+}
+
+.ProseMirror hr.pm-section-break-node.ProseMirror-selectednode::before {
+  border-top-color: #60a5fa;
+}
+
+/* —— Paragraph spacing suppressed by contextualSpacing —— */
+.ProseMirror .pm-ctx-before {
+  padding-top: 0 !important;
+}
+
+.ProseMirror .pm-ctx-after {
+  padding-bottom: 0 !important;
+}
+
+/* —— Character formatting —— */
+.ProseMirror u.pm-underline {
+  text-decoration-line: underline;
+  text-decoration-skip-ink: none;
+}
+
+.ProseMirror s.pm-strike {
+  text-decoration-line: line-through;
+}
+
+.ProseMirror .pm-color {
+  color: var(--pm-color);
+}
+
+.ProseMirror .pm-highlight {
+  background: var(--pm-highlight);
+  color: var(--pm-highlight-text);
+}
+
+.ProseMirror .pm-highlight .pm-color,
+.ProseMirror .pm-color .pm-highlight {
+  color: var(--pm-print-color);
+}
+
+.ProseMirror .pm-caps--all {
+  text-transform: uppercase;
+}
+
+.ProseMirror .pm-caps--small {
+  font-variant: small-caps;
+}
+
+/* Word shrinks super/subscript to 2/3 size without growing the line. */
+.ProseMirror .pm-vert {
+  position: relative;
+  vertical-align: baseline;
+  font-size: 0.67em;
+  line-height: 0;
+}
+
+.ProseMirror sup.pm-vert {
+  top: -0.33em;
+}
+
+.ProseMirror sub.pm-vert {
+  top: 0.14em;
+}
+
+/* —— Track changes (Word "All Markup": author colour, underline / strikethrough) —— */
+.ProseMirror ins.tc-insertion {
+  color: var(--tc-color);
+  text-decoration: underline;
+  text-decoration-color: var(--tc-color);
+  text-decoration-skip-ink: none;
+}
+
+.ProseMirror del.tc-deletion {
+  color: var(--tc-color);
+  text-decoration: line-through;
+  text-decoration-color: var(--tc-color);
+}
+
+.ProseMirror :is(ins.tc-insertion, del.tc-deletion) :is(.pm-color, .pm-highlight) {
+  color: inherit;
+}
+
+:is(.transcript-editor-root--simple-markup, .transcript-editor-root--hide-insdel)
+  .ProseMirror
+  ins.tc-insertion
+  .pm-color {
+  color: var(--pm-color);
+}
+
+:is(.transcript-editor-root--simple-markup, .transcript-editor-root--hide-insdel)
+  .ProseMirror
+  del.tc-deletion {
+  display: none;
+}
+
+:is(.transcript-editor-root--simple-markup, .transcript-editor-root--hide-insdel)
+  .ProseMirror
+  ins.tc-insertion {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* —— Comments: tinted range in the author's colour —— */
+.ProseMirror .pm-comment {
+  background: color-mix(in srgb, var(--tc-color) 18%, transparent);
+  box-shadow: inset 0 -1px 0 var(--tc-color);
+}
+
+.transcript-editor-root--hide-comments .ProseMirror .pm-comment {
+  background: none;
+  box-shadow: none;
+}
+
+.studio-change-bar {
+  position: absolute;
+  width: 1px;
+  background: #d4d4d8;
+}
+
+.studio-change-bar--simple {
+  width: 2px;
+  background: #f05454;
+}
+
+.studio-markup-pane {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid #3f3f46;
+  background: #18181b;
+}
+
+.studio-markup-leaders {
+  position: absolute;
+  left: 0;
+  top: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.studio-markup-leaders polyline {
+  fill: none;
+  stroke-width: 1;
+  stroke-dasharray: 1 2;
+}
+
+.studio-balloon {
+  position: absolute;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  border: 1px solid;
+  border-radius: 2px;
+  background: #1f1f23;
+  color: #d4d4d8;
+  font: 11px/15px ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  text-align: left;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.studio-balloon-body {
+  display: block;
+  width: 100%;
+  font: inherit;
+  color: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+
+.studio-balloon-body > strong {
+  display: block;
+  font-weight: 600;
+  color: #f4f4f5;
+}
+
+.studio-balloon-body > span {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.studio-balloon--comment {
+  background: #23232a;
+  border-radius: 6px;
+}
+
+.studio-balloon-reply {
+  margin-top: 3px;
+  padding-top: 3px;
+  border-top: 1px solid #3f3f46;
+}
+
+.studio-balloon-reply strong {
+  font-weight: 600;
+  color: #e4e4e7;
+}
+
+.studio-balloon--resolved {
+  opacity: 0.55;
+}
+
+.studio-balloon--resolved .studio-balloon-body > strong::after {
+  content: " \00b7  Resolved";
+  font-weight: 400;
+  color: #a1a1aa;
+}
+
+.studio-balloon-actions {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: none;
+  gap: 2px;
+}
+
+.studio-balloon:is(:hover, :focus-within) .studio-balloon-actions {
+  display: flex;
+}
+
+.studio-balloon-actions button {
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  background: #3f3f46;
+  color: #f4f4f5;
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.studio-balloon-actions button:hover {
+  background: #0369a1;
+}
+
+@media print {
+  @page {
+    size: letter;
+    margin: 1in;
+  }
+
+  .transcript-editor-root,
+  .transcript-editor-root .transcript-editor-scroll {
+    background: #fff !important;
+    padding: 0 !important;
+    overflow: visible !important;
+  }
+
+  .transcript-editor-root .studio-editor-chrome,
+  .studio-ruler-bar,
+  .studio-nav-pane,
+  .studio-status-bar,
+  .studio-markup-pane,
+  .studio-markup-leaders,
+  .studio-balloon,
+  .studio-change-bar {
+    display: none !important;
+  }
+
+  .transcript-editor-root .paper-zoom {
+    width: auto !important;
+    height: auto !important;
+  }
+
+  .transcript-editor-root .paper {
+    transform: none !important;
+  }
+
+  .transcript-editor-root .ProseMirror {
+    color: #000 !important;
+    width: 100% !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+  }
+
+  .ProseMirror .pm-color {
+    color: var(--pm-print-color) !important;
+  }
+
+  .ProseMirror .pm-table :is(td, th) {
+    border-color: #000 !important;
+  }
+
+  .ProseMirror .pm-table[data-borderless] :is(td, th) {
+    border: none !important;
+  }
+
+  .ProseMirror .pm-table td.pm-page-break-cell {
+    height: 0 !important;
+  }
+
+  .ProseMirror a.pm-link {
+    color: #0563c1 !important;
+  }
+
+  .ProseMirror .pm-image-wrap {
+    outline: none !important;
+  }
+
+  .ProseMirror .pm-image-handle,
+  .ProseMirror .column-resize-handle {
+    display: none !important;
+  }
+
+  .pm-page-break-widget {
+    height: 0 !important;
+    break-after: page;
+  }
+
+  .ProseMirror hr.pm-page-break-node {
+    border: 0;
+    break-after: page;
+  }
+
+  .ProseMirror hr.pm-page-break-node::after {
+    display: none;
+  }
+}
