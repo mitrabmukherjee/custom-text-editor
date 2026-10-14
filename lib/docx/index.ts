@@ -1,2 +1,2 @@
 export { exportDocx, type ExportDocxOptions } from "./export";
-export { importDocx, type DocxImportResult } from "./import";
+export { importDocx, sectPrStartType, type DocxImportResult } from "./import";

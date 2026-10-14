@@ -1,7 +1,10 @@
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import JSZip from "jszip";
 import { describe, expect, it } from "vitest";
 import { collectComments, type CommentThread } from "@/lib/pm/comments";
-import type { DocumentLayout, ParagraphFormat } from "@/lib/pm/format";
+import { PT_TO_PX, type DocumentLayout, type ParagraphFormat } from "@/lib/pm/format";
 import type { DocJSON, NodeJSON } from "@/lib/pm/json";
 import { LETTER_PAGE_SETUP } from "@/lib/pm/pagination/pageSetup";
 import { collectChanges } from "@/lib/pm/track-changes/changes";
@@ -59,6 +62,89 @@ const SAMPLE: DocJSON = {
 async function documentXml(buffer: ArrayBuffer) {
   const zip = await JSZip.loadAsync(buffer);
   return (await zip.file("word/document.xml")!.async("string")) ?? "";
+}
+
+const OOXML_SECTION_STARTS: Record<string, string> = {
+  nextPage: "nextPage",
+  continuous: "continuous",
+  evenPage: "evenPage",
+  oddPage: "oddPage",
+};
+
+function sectPrPageSizeKeyFromXml(sectPr: string): string {
+  const pgSz = sectPr.match(/<w:pgSz[^/]*\/>/)?.[0] ?? "";
+  const cols = sectPr.match(/<w:cols[^/]*\/>/)?.[0] ?? "";
+  const w = pgSz.match(/w:w="([^"]+)"/)?.[1] ?? "";
+  const h = pgSz.match(/w:h="([^"]+)"/)?.[1] ?? "";
+  const colNum = cols.match(/w:num="(\d+)"/)?.[1] ?? "1";
+  return `${w}|${h}|${colNum}`;
+}
+
+/** Inline `w:sectPr` start types in document order (matches `sectPrStartType` in import). */
+function inlineSectPrStartTypes(xml: string): string[] {
+  const body = xml.match(/<w:body[^>]*>([\s\S]*)<\/w:body>/)?.[1] ?? "";
+  const starts: string[] = [];
+  let prevKey: string | null = null;
+  for (const para of body.matchAll(/<w:p[\s\S]*?<\/w:p>/g)) {
+    const block = para[0];
+    if (!block.includes("<w:sectPr")) continue;
+    const sectPr = block.match(/<w:sectPr[\s\S]*?<\/w:sectPr>/)?.[0];
+    if (!sectPr) continue;
+    const key = sectPrPageSizeKeyFromXml(sectPr);
+    const typeVal = sectPr.match(/<w:type w:val="([^"]+)"/)?.[1];
+    let start: string;
+    if (typeVal === "nextColumn") {
+      const colNum = sectPr.match(/<w:cols[^>]*w:num="(\d+)"/)?.[1];
+      start = !colNum || Number(colNum) <= 1 ? "continuous" : "nextPage";
+    } else if (typeVal) {
+      start = OOXML_SECTION_STARTS[typeVal] ?? "nextPage";
+    } else if (prevKey === null || key === prevKey) {
+      start = "continuous";
+    } else {
+      start = "nextPage";
+    }
+    starts.push(start);
+    prevKey = key;
+  }
+  return starts;
+}
+
+function countImportedForcedBreaks(doc: DocJSON) {
+  let pageBreaks = 0;
+  let pageBreakBefore = 0;
+  let sectionBreaks = 0;
+  const sectionStarts: Record<string, number> = {};
+  const walk = (nodes: NodeJSON[] | undefined) => {
+    for (const node of nodes ?? []) {
+      if (node.type === "page_break") pageBreaks += 1;
+      if (node.type === "section_break") {
+        sectionBreaks += 1;
+        const start = (node.attrs?.start as string) ?? "nextPage";
+        sectionStarts[start] = (sectionStarts[start] ?? 0) + 1;
+      }
+      if (node.type === "paragraph" || node.type === "heading") {
+        const format = node.attrs?.format as ParagraphFormat | null | undefined;
+        if (format?.pageBreakBefore) pageBreakBefore += 1;
+      }
+      walk(node.content);
+    }
+  };
+  walk(doc.content);
+  return { pageBreaks, pageBreakBefore, sectionBreaks, sectionStarts };
+}
+
+function sectionBreakStarts(doc: DocJSON): string[] {
+  const out: string[] = [];
+  const walk = (nodes: NodeJSON[] | undefined) => {
+    for (const node of nodes ?? []) {
+      if (node.type === "section_break") {
+        out.push((node.attrs?.start as string) ?? "nextPage");
+      }
+      walk(node.content);
+    }
+  };
+  walk(doc.content);
+  return out;
 }
 
 describe("exportDocx", () => {
@@ -644,5 +730,361 @@ describe("importDocx", () => {
     zip.file("hello.txt", "hi");
     const buffer = await zip.generateAsync({ type: "arraybuffer" });
     await expect(importDocx(buffer)).rejects.toThrow(/word\/document\.xml/);
+  });
+
+  it("imports inline sectPr w:type as section_break start (continuous, not next section)", async () => {
+    const zip = new JSZip();
+    zip.file(
+      "[Content_Types].xml",
+      '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+    );
+    zip.file(
+      "word/document.xml",
+      [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">',
+        "<w:body>",
+        "<w:p>",
+        "<w:pPr><w:sectPr>",
+        '<w:type w:val="continuous"/>',
+        '<w:pgSz w:w="12240" w:h="15840"/>',
+        '<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>',
+        "</w:sectPr></w:pPr>",
+        "<w:r><w:t>Section zero</w:t></w:r>",
+        "</w:p>",
+        "<w:p><w:r><w:t>Section one</w:t></w:r></w:p>",
+        "<w:sectPr>",
+        '<w:pgSz w:w="12240" w:h="15840"/>',
+        '<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>',
+        "</w:sectPr>",
+        "</w:body>",
+        "</w:document>",
+      ].join(""),
+    );
+    const { doc } = await importDocx(await zip.generateAsync({ type: "arraybuffer" }));
+    const node = schema.nodeFromJSON(doc);
+    expect(node.child(1).type.name).toBe("section_break");
+    expect(node.child(1).attrs.start).toBe("continuous");
+  });
+
+  it("imports test.docx section break types without shifted starts", async () => {
+    const buffer = await readFile(join(process.cwd(), "public", "test.docx"));
+    const arrayBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+    const xml = await documentXml(arrayBuffer);
+    const expected = inlineSectPrStartTypes(xml);
+    const { doc } = await importDocx(buffer);
+    const imported = sectionBreakStarts(doc);
+    expect(imported.length).toBe(expected.length);
+    expect(imported).toEqual(expected);
+    expect(countImportedForcedBreaks(doc).sectionBreaks).toBe(expected.length);
+  });
+
+  it("treats missing w:type as continuous when page geometry is unchanged", async () => {
+    const zip = new JSZip();
+    zip.file(
+      "[Content_Types].xml",
+      '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+    );
+    const pg =
+      '<w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>';
+    zip.file(
+      "word/document.xml",
+      [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">',
+        "<w:body>",
+        `<w:p><w:pPr><w:sectPr>${pg}</w:sectPr></w:pPr><w:r><w:t>A</w:t></w:r></w:p>`,
+        `<w:p><w:pPr><w:sectPr>${pg}<w:pgNumType w:start="1"/></w:sectPr></w:pPr><w:r><w:t>B</w:t></w:r></w:p>`,
+        `<w:p><w:r><w:t>C</w:t></w:r></w:p>`,
+        `<w:sectPr>${pg}</w:sectPr>`,
+        "</w:body>",
+        "</w:document>",
+      ].join(""),
+    );
+    const { doc } = await importDocx(await zip.generateAsync({ type: "arraybuffer" }));
+    expect(sectionBreakStarts(doc)).toEqual(["continuous", "continuous"]);
+  });
+
+  it("imports sectPr in a table cell with continuous start", async () => {
+    const zip = new JSZip();
+    zip.file(
+      "[Content_Types].xml",
+      '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+    );
+    zip.file(
+      "word/document.xml",
+      [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">',
+        "<w:body>",
+        "<w:tbl><w:tr><w:tc>",
+        "<w:p>",
+        "<w:pPr><w:sectPr>",
+        '<w:type w:val="continuous"/>',
+        '<w:pgSz w:w="12240" w:h="15840"/>',
+        '<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>',
+        "</w:sectPr></w:pPr>",
+        "<w:r><w:t>In table</w:t></w:r>",
+        "</w:p>",
+        "</w:tc></w:tr></w:tbl>",
+        "<w:p><w:r><w:t>After table</w:t></w:r></w:p>",
+        "<w:sectPr>",
+        '<w:pgSz w:w="12240" w:h="15840"/>',
+        '<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>',
+        "</w:sectPr>",
+        "</w:body>",
+        "</w:document>",
+      ].join(""),
+    );
+    const { doc } = await importDocx(await zip.generateAsync({ type: "arraybuffer" }));
+    const node = schema.nodeFromJSON(doc);
+    const table = node.child(0);
+    expect(table.type.name).toBe("table");
+    expect(table.child(0).child(0).child(1).type.name).toBe("section_break");
+    expect(table.child(0).child(0).child(1).attrs.start).toBe("continuous");
+  });
+
+  it("maps nextColumn to continuous for single-column sectPr", async () => {
+    const zip = new JSZip();
+    zip.file(
+      "[Content_Types].xml",
+      '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+    );
+    zip.file(
+      "word/document.xml",
+      [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">',
+        "<w:body>",
+        "<w:p>",
+        "<w:pPr><w:sectPr>",
+        '<w:type w:val="nextColumn"/><w:cols w:num="1"/>',
+        '<w:pgSz w:w="12240" w:h="15840"/>',
+        '<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>',
+        "</w:sectPr></w:pPr>",
+        "<w:r><w:t>One</w:t></w:r>",
+        "</w:p>",
+        "<w:p><w:r><w:t>Two</w:t></w:r></w:p>",
+        "<w:sectPr>",
+        '<w:pgSz w:w="12240" w:h="15840"/>',
+        '<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>',
+        "</w:sectPr>",
+        "</w:body>",
+        "</w:document>",
+      ].join(""),
+    );
+    const { doc } = await importDocx(await zip.generateAsync({ type: "arraybuffer" }));
+    expect(schema.nodeFromJSON(doc).child(1).attrs.start).toBe("continuous");
+  });
+
+  it("imports paragraph box borders and centered table width", async () => {
+    const zip = await JSZip.loadAsync(await readFile(join(process.cwd(), "public", "test.docx")));
+    const xml = await zip.file("word/document.xml")!.async("string");
+    const body = [
+      "<w:p><w:pPr>",
+      '<w:pBdr><w:top w:val="dashed" w:sz="12" w:space="4" w:color="000000"/></w:pBdr>',
+      '<w:jc w:val="center"/>',
+      "</w:pPr><w:r><w:t>FORM 3</w:t></w:r></w:p>",
+      "<w:tbl>",
+      "<w:tblPr>",
+      '<w:tblW w:w="3000" w:type="dxa"/>',
+      '<w:jc w:val="center"/>',
+      '<w:tblInd w:w="720" w:type="dxa"/>',
+      "</w:tblPr>",
+      '<w:tblGrid><w:gridCol w:w="3000"/></w:tblGrid>',
+      "<w:tr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr>",
+      "</w:tbl>",
+    ].join("");
+    zip.file("word/document.xml", xml.replace(/<w:body>[\s\S]*?(<w:sectPr)/, `<w:body>${body}$1`));
+    const { doc } = await importDocx(await zip.generateAsync({ type: "arraybuffer" }));
+    const node = schema.nodeFromJSON(doc);
+    expect(node.child(0).attrs.format?.boxBorder?.top).toMatchObject({
+      style: "dashed",
+      widthPt: 1.5,
+      paddingPx: (4 / 8) * PT_TO_PX,
+    });
+    const table = node.child(1);
+    expect(table.attrs).toMatchObject({ align: "center", width: 200, indent: 48 });
+  });
+
+  it("imports per-cell tcBorders", async () => {
+    const zip = await JSZip.loadAsync(await readFile(join(process.cwd(), "public", "test.docx")));
+    const xml = await zip.file("word/document.xml")!.async("string");
+    const body = [
+      "<w:tbl>",
+      "<w:tblPr><w:tblStyle w:val=\"TableGrid\"/></w:tblPr>",
+      '<w:tblGrid><w:gridCol w:w="3000"/></w:tblGrid>',
+      "<w:tr><w:tc><w:tcPr>",
+      "<w:tcBorders>",
+      '<w:bottom w:val="dotted" w:sz="8" w:space="0" w:color="000000"/>',
+      '<w:top w:val="nil"/>',
+      "</w:tcBorders>",
+      "</w:tcPr><w:p><w:r><w:t>Note</w:t></w:r></w:p></w:tc></w:tr>",
+      "</w:tbl>",
+    ].join("");
+    zip.file("word/document.xml", xml.replace(/<w:body>[\s\S]*?(<w:sectPr)/, `<w:body>${body}$1`));
+    const { doc } = await importDocx(await zip.generateAsync({ type: "arraybuffer" }));
+    const cell = schema.nodeFromJSON(doc).child(0).child(0).child(0);
+    expect(cell.attrs.edges?.bottom).toMatchObject({ style: "dotted", widthPt: 1 });
+    expect(cell.attrs.edges?.top).toBe("none");
+  });
+
+  it("imports batch layout fixtures (form2 paragraph, form2 table, form3 table)", async () => {
+    const dir = join(process.cwd(), "public", "fixtures", "batch");
+    const { doc: p } = await importDocx(await readFile(join(dir, "form2-paragraph.docx")));
+    const para = schema.nodeFromJSON(p);
+    expect(para.textContent).toContain("FORM 2");
+    expect(para.child(0).attrs.format?.align).toBe("center");
+
+    const { doc: t } = await importDocx(await readFile(join(dir, "form2-table.docx")));
+    const table = schema.nodeFromJSON(t).child(0);
+    expect(table.type.name).toBe("table");
+    expect(table.attrs.align).toBe("center");
+    expect(table.attrs.width).toBe(200);
+    expect(table.child(0).child(0).attrs.edges?.bottom).toBe("none");
+
+    const { doc: f3 } = await importDocx(await readFile(join(dir, "form3-table.docx")));
+    const f3table = schema.nodeFromJSON(f3).child(0);
+    expect(f3table.textContent).toContain("FORM 3");
+    expect(f3table.child(0).attrs.rowHeight).toBeGreaterThan(0);
+    expect(f3table.child(0).child(0).attrs.cellMargin?.left).toBeGreaterThan(0);
+    expect(f3table.child(0).child(0).attrs.edges?.bottom).toMatchObject({ style: "dotted" });
+  });
+
+  it("round-trips table layout attrs", async () => {
+    const dir = join(process.cwd(), "public", "fixtures", "batch");
+    const { doc } = await importDocx(await readFile(join(dir, "form3-table.docx")));
+    const reimported = schema.nodeFromJSON((await importDocx(await exportDocx(doc, LETTER_PAGE_SETUP))).doc);
+    const table = reimported.child(0);
+    expect(table.attrs.align).toBe("center");
+    expect(table.child(0).child(0).attrs.edges?.bottom).toMatchObject({ style: "dotted" });
+  });
+
+  it("round-trips paragraph box border w:space", async () => {
+    const zip = await JSZip.loadAsync(await readFile(join(process.cwd(), "public", "test.docx")));
+    const xml = await zip.file("word/document.xml")!.async("string");
+    const body = [
+      "<w:p><w:pPr>",
+      '<w:pBdr><w:top w:val="dashed" w:sz="12" w:space="4" w:color="000000"/></w:pBdr>',
+      "</w:pPr><w:r><w:t>Bordered</w:t></w:r></w:p>",
+    ].join("");
+    zip.file("word/document.xml", xml.replace(/<w:body>[\s\S]*?(<w:sectPr)/, `<w:body>${body}$1`));
+    const { doc } = await importDocx(await zip.generateAsync({ type: "arraybuffer" }));
+    const exported = await exportDocx(doc, LETTER_PAGE_SETUP);
+    const out = await documentXml(exported);
+    expect(out).toMatch(/<w:top[^>]*w:space="4"/);
+  });
+
+  it("imports VML pict when imagedata uses a plain id attribute", async () => {
+    const sectPr =
+      '<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>';
+    const zip = new JSZip();
+    zip.file(
+      "[Content_Types].xml",
+      [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">',
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>',
+        '<Default Extension="xml" ContentType="application/xml"/>',
+        '<Default Extension="png" ContentType="image/png"/>',
+        '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>',
+        "</Types>",
+      ].join(""),
+    );
+    zip.file(
+      "word/_rels/document.xml.rels",
+      [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">',
+        '<Relationship Id="rId5" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/dot.png"/>',
+        "</Relationships>",
+      ].join(""),
+    );
+    zip.file("word/media/dot.png", Buffer.from(PNG_1PX, "base64"));
+    zip.file(
+      "word/document.xml",
+      [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">',
+        "<w:body>",
+        "<w:p><w:r><w:pict>",
+        '<v:shape style="width:40pt;height:20pt"><v:imagedata id="rId5" o:title="dot"/></v:shape>',
+        "</w:pict></w:r></w:p>",
+        sectPr,
+        "</w:body>",
+        "</w:document>",
+      ].join(""),
+    );
+    const { doc } = await importDocx(await zip.generateAsync({ type: "arraybuffer" }));
+    const para = schema.nodeFromJSON(doc).child(0);
+    expect(para.child(0).type.name).toBe("image");
+    expect(para.child(0).attrs.alt).toBe("dot");
+    expect(String(para.child(0).attrs.src)).toContain("image/png");
+  });
+
+  it("imports and exports table row trHeight hRule", async () => {
+    const sectPr =
+      '<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>';
+    const zip = new JSZip();
+    zip.file(
+      "[Content_Types].xml",
+      '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+    );
+    zip.file(
+      "word/document.xml",
+      [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">',
+        "<w:body>",
+        "<w:tbl>",
+        '<w:tblGrid><w:gridCol w:w="3000"/></w:tblGrid>',
+        '<w:tr><w:trPr><w:trHeight w:val="400" w:hRule="atLeast"/></w:trPr>',
+        "<w:tc><w:p><w:r><w:t>Row</w:t></w:r></w:p></w:tc></w:tr>",
+        "</w:tbl>",
+        sectPr,
+        "</w:body>",
+        "</w:document>",
+      ].join(""),
+    );
+    const { doc } = await importDocx(await zip.generateAsync({ type: "arraybuffer" }));
+    const row = schema.nodeFromJSON(doc).child(0).child(0);
+    expect(row.attrs.rowHeightRule).toBe("atLeast");
+    expect(row.attrs.rowHeight).toBeGreaterThan(0);
+    const exported = await documentXml(await exportDocx(doc, LETTER_PAGE_SETUP));
+    expect(exported).toMatch(/w:trHeight[^>]*w:hRule="atLeast"/);
+  });
+
+  it("imports Zimmerman Form 3 (header table, Courier cs font, anchored VML signature)", async () => {
+    const path = join(process.cwd(), "public", "fixtures", "zimmerman-form3.docx");
+    if (!existsSync(path)) return;
+    const { doc } = await importDocx(await readFile(path));
+    const root = schema.nodeFromJSON(doc);
+    let form3Format: ParagraphFormat | undefined;
+    let anchoredOnUnderline = false;
+    root.descendants((n) => {
+      if (n.type.name === "paragraph" && n.textContent.trim() === "FORM 3") {
+        form3Format = n.attrs.format as ParagraphFormat;
+      }
+      if (n.type.name === "paragraph" && /_{8,}/.test(n.textContent)) {
+        const img = n.firstChild;
+        if (img?.type.name === "image" && img.attrs.anchorX != null) anchoredOnUnderline = true;
+      }
+    });
+    expect(form3Format?.fontFamily).toBe("Courier New");
+    expect(anchoredOnUnderline).toBe(true);
+    expect(root.textContent).toContain("Jennifer O'Hare");
+  });
+
+  it("imports body framePr on paragraphs", async () => {
+    const zip = await JSZip.loadAsync(await readFile(join(process.cwd(), "public", "test.docx")));
+    const xml = await zip.file("word/document.xml")!.async("string");
+    const body =
+      '<w:p><w:pPr><w:framePr w:hAnchor="margin" w:vAnchor="text" w:x="1440" w:y="-200"/></w:pPr>' +
+      "<w:r><w:t>Signature</w:t></w:r></w:p>";
+    zip.file("word/document.xml", xml.replace(/<w:body>[\s\S]*?(<w:sectPr)/, `<w:body>${body}$1`));
+    const { doc } = await importDocx(await zip.generateAsync({ type: "arraybuffer" }));
+    const node = schema.nodeFromJSON(doc).child(0);
+    expect(node.attrs.floating).toBe(true);
+    expect(node.attrs.frame?.hAnchor).toBe("margin");
   });
 });

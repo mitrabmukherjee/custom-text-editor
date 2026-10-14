@@ -9,6 +9,16 @@ export type TextAlign = "left" | "center" | "right" | "justify";
 
 export type TabStop = { pos: number; align: "left" | "center" | "right" | "decimal" };
 
+/** One edge of a Word paragraph box border (`w:pBdr`). */
+export type ParagraphBorderSide = {
+  style: "solid" | "dashed" | "dotted" | "double";
+  /** Border width in pt (`w:sz` is eighths of a point). */
+  widthPt: number;
+  color: string;
+  /** Gap between border and text, px (`w:space` is eighths of a point, like `w:sz`). */
+  paddingPx?: number;
+};
+
 /** Resolved Word paragraph formatting. Lengths are CSS px, font sizes pt. */
 export type ParagraphFormat = {
   align?: TextAlign;
@@ -35,7 +45,43 @@ export type ParagraphFormat = {
   contextualSpacing?: boolean;
   /** Word paragraph style id (e.g. "Heading1"); see `DocumentLayout.styles`. */
   styleId?: string;
+  /** Paragraph box border (`w:pBdr`), e.g. certification form outlines. */
+  boxBorder?: Partial<
+    Record<"top" | "right" | "bottom" | "left", ParagraphBorderSide>
+  >;
 };
+
+export type TableAlign = "left" | "center" | "right";
+
+/** Per-edge table cell border (`w:tcBorders`); `"none"` is explicit `w:val="nil"`. */
+export type CellBorderEdges = Partial<
+  Record<"top" | "right" | "bottom" | "left", ParagraphBorderSide | "none">
+>;
+
+export function cellBorderCss(edges: CellBorderEdges): string {
+  const css: string[] = [];
+  const keys = (["top", "right", "bottom", "left"] as const).filter((s) => edges[s] !== undefined);
+  if (!keys.length) return "";
+  css.push("border: none !important");
+  for (const side of keys) {
+    const edge = edges[side];
+    if (edge === "none") css.push(`border-${side}: none !important`);
+    else if (edge) css.push(`border-${side}: ${borderCss(edge)} !important`);
+  }
+  return css.join("; ");
+}
+
+export type CellMarginPx = { top?: number; right?: number; bottom?: number; left?: number };
+
+export function cellMarginCss(margin: CellMarginPx | null | undefined): string {
+  if (!margin) return "";
+  const parts: string[] = [];
+  if (margin.top) parts.push(`padding-top: ${round(margin.top)}px`);
+  if (margin.right) parts.push(`padding-right: ${round(margin.right)}px`);
+  if (margin.bottom) parts.push(`padding-bottom: ${round(margin.bottom)}px`);
+  if (margin.left) parts.push(`padding-left: ${round(margin.left)}px`);
+  return parts.join("; ");
+}
 
 /** A tracked paragraph formatting revision (`w:pPrChange`), stored on the paragraph. */
 export type ParagraphChange = {
@@ -195,6 +241,19 @@ function spaceEm(family: string | undefined): number {
   return 0.25;
 }
 
+/** One line's box height in px from Word paragraph format (matches `hfParagraphHeight` / CSS intent). */
+export function paragraphLineHeightPx(format: ParagraphFormat | null | undefined): number | undefined {
+  if (!format) return undefined;
+  const fontPt = format.fontSize ?? 10;
+  const single = fontPt * PT_TO_PX * SINGLE_LINE_FACTOR;
+  const { lineRule, lineValue } = format;
+  if (!lineRule || lineValue === undefined) return format.fontSize ? single : undefined;
+  if (lineRule === "auto") return single * lineValue;
+  if (lineRule === "exact") return lineValue;
+  if (lineRule === "atLeast") return Math.max(single, lineValue);
+  return undefined;
+}
+
 /** CSS line-height for a paragraph format, or undefined for the stylesheet default. */
 export function lineHeightCss(format: ParagraphFormat): string | undefined {
   const { lineRule, lineValue } = format;
@@ -216,10 +275,18 @@ type CssDeclarations = Partial<
     | "fontFamily"
     | "fontSize"
     | "lineHeight"
-    | "wordSpacing",
+    | "wordSpacing"
+    | "borderTop"
+    | "borderRight"
+    | "borderBottom"
+    | "borderLeft",
     string
   >
 > & { textAlign?: TextAlign };
+
+function borderCss(side: ParagraphBorderSide): string {
+  return `${round(side.widthPt)}pt ${side.style} ${side.color}`;
+}
 
 /**
  * CSS for a formatted paragraph. Word spacing is additive, so it maps to padding, not margins.
@@ -234,15 +301,36 @@ export function paragraphStyle(format: ParagraphFormat | null | undefined): CssD
   if (format.align === "justify") {
     css.wordSpacing = `calc(var(${JUSTIFY_SHRINK_VAR}, 0) * -${spaceEm(format.fontFamily)}em)`;
   }
-  if (format.indentLeft) css.paddingLeft = `${round(format.indentLeft)}px`;
-  if (format.indentRight) css.paddingRight = `${round(format.indentRight)}px`;
+  let padLeft = format.indentLeft ?? 0;
+  let padRight = format.indentRight ?? 0;
+  let padTop = format.spaceBefore ?? 0;
+  let padBottom = format.spaceAfter ?? 0;
   if (format.indentFirstLine) css.textIndent = `${round(format.indentFirstLine)}px`;
-  if (format.spaceBefore) css.paddingTop = `${round(format.spaceBefore)}px`;
-  if (format.spaceAfter) css.paddingBottom = `${round(format.spaceAfter)}px`;
   if (format.fontFamily) css.fontFamily = fontStack(format.fontFamily);
   if (format.fontSize) css.fontSize = `${round(format.fontSize)}pt`;
   const lh = lineHeightCss(format);
   if (lh) css.lineHeight = lh;
+  const box = format.boxBorder;
+  if (box?.top) {
+    css.borderTop = borderCss(box.top);
+    padTop += box.top.paddingPx ?? 0;
+  }
+  if (box?.right) {
+    css.borderRight = borderCss(box.right);
+    padRight += box.right.paddingPx ?? 0;
+  }
+  if (box?.bottom) {
+    css.borderBottom = borderCss(box.bottom);
+    padBottom += box.bottom.paddingPx ?? 0;
+  }
+  if (box?.left) {
+    css.borderLeft = borderCss(box.left);
+    padLeft += box.left.paddingPx ?? 0;
+  }
+  if (padLeft) css.paddingLeft = `${round(padLeft)}px`;
+  if (padRight) css.paddingRight = `${round(padRight)}px`;
+  if (padTop) css.paddingTop = `${round(padTop)}px`;
+  if (padBottom) css.paddingBottom = `${round(padBottom)}px`;
   return css;
 }
 

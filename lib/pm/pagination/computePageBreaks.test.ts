@@ -75,10 +75,10 @@ describe("computePageBreaks", () => {
     expect(breaks).toEqual([{ lineIndex: 2, height: 1080 - 64, forced: true }]);
   });
 
-  it("adds an empty page for a trailing hard break", () => {
+  it("does not add an empty page for a trailing hard break", () => {
     const input = lines(3);
     input[2] = { ...input[2], breakAfter: true };
-    expect(computePageBreaks(input, setup).pageCount).toBe(2);
+    expect(computePageBreaks(input, setup).pageCount).toBe(1);
   });
 
   it("lets a line taller than a page overflow instead of looping", () => {

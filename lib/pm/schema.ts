@@ -9,8 +9,13 @@ import {
 import { addListNodes } from "prosemirror-schema-list";
 import { tableNodes } from "prosemirror-tables";
 import {
+  cellBorderCss,
+  cellMarginCss,
   paragraphCss,
   runCss,
+  type CellBorderEdges,
+  type CellMarginPx,
+  type HFFrame,
   type ParagraphChange,
   type ParagraphFormat,
   type SectionLayout,
@@ -101,8 +106,24 @@ function parseParaChange(dom: HTMLElement): ParagraphChange | null {
   }
 }
 
+function parseFrameAttr(dom: HTMLElement): HFFrame | null {
+  const raw = dom.getAttribute("data-frame");
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as HFFrame;
+  } catch {
+    return null;
+  }
+}
+
 function blockAttrs(dom: HTMLElement) {
-  return { format: parseFormat(dom), paraChange: parseParaChange(dom) };
+  const frame = parseFrameAttr(dom);
+  return {
+    format: parseFormat(dom),
+    paraChange: parseParaChange(dom),
+    frame,
+    floating: dom.hasAttribute("data-floating"),
+  };
 }
 
 function blockDataAttrs(node: PMNode): Record<string, string> {
@@ -118,6 +139,12 @@ function blockDataAttrs(node: PMNode): Record<string, string> {
     attrs["data-change-id"] = change.id;
     attrs.class = "tc-para-change";
     attrs.style = `${attrs.style ?? ""}; --tc-color: ${authorColor(change.authorId || "unknown")}`;
+  }
+  const frame = node.attrs.frame as HFFrame | null;
+  if (frame) {
+    attrs["data-frame"] = JSON.stringify(frame);
+    attrs["data-floating"] = "";
+    attrs.class = [attrs.class, "pm-body-frame"].filter(Boolean).join(" ");
   }
   return attrs;
 }
@@ -187,21 +214,134 @@ const cellNodes = tableNodes({
         attrs.style = `${attrs.style ?? ""}vertical-align: ${value};`;
       },
     },
+    edges: {
+      default: null,
+      getFromDOM: (dom) => {
+        const raw = dom.getAttribute("data-cell-edges");
+        if (!raw) return null;
+        try {
+          return JSON.parse(raw) as CellBorderEdges;
+        } catch {
+          return null;
+        }
+      },
+      setDOMAttr: (value, attrs) => {
+        if (!value || typeof value !== "object") return;
+        attrs["data-cell-edges"] = "";
+        attrs.style = `${attrs.style ?? ""}${cellBorderCss(value as CellBorderEdges)};`;
+      },
+    },
+    cellMargin: {
+      default: null,
+      getFromDOM: (dom) => {
+        const raw = dom.getAttribute("data-cell-margin");
+        if (!raw) return null;
+        try {
+          return JSON.parse(raw) as CellMarginPx;
+        } catch {
+          return null;
+        }
+      },
+      setDOMAttr: (value, attrs) => {
+        if (!value || typeof value !== "object") return;
+        attrs["data-cell-margin"] = JSON.stringify(value);
+        const marginCss = cellMarginCss(value as CellMarginPx);
+        if (marginCss) attrs.style = `${attrs.style ?? ""}${marginCss};`;
+      },
+    },
   },
 });
+
+function tableDomAttrs(node: PMNode): Record<string, string> {
+  const attrs: Record<string, string> = { class: "pm-table" };
+  if (!node.attrs.borders) attrs["data-borderless"] = "";
+  const style: string[] = [];
+  const width = node.attrs.width as number | null;
+  const widthPct = node.attrs.widthPct as number | null;
+  const indent = node.attrs.indent as number | null;
+  const align = node.attrs.align as "left" | "center" | "right" | null;
+  if (width) {
+    style.push(`width: ${Math.round(width)}px`, "max-width: 100%");
+    attrs["data-width"] = String(Math.round(width));
+  } else if (widthPct) {
+    style.push(`width: ${widthPct}%`);
+    attrs["data-width-pct"] = String(widthPct);
+  }
+  if (indent) {
+    style.push(`margin-left: ${Math.round(indent)}px`);
+    attrs["data-indent"] = String(Math.round(indent));
+  }
+  if (align === "center") style.push("margin-left: auto", "margin-right: auto");
+  else if (align === "right") style.push("margin-left: auto", "margin-right: 0");
+  if (style.length) attrs.style = style.join("; ");
+  return attrs;
+}
+
+function tableRowDom(node: PMNode): DOMOutputSpec {
+  const style: string[] = [];
+  const h = node.attrs.rowHeight as number | null;
+  const attrs: Record<string, string> = {};
+  if (h) {
+    style.push(`height: ${Math.round(h)}px`, `min-height: ${Math.round(h)}px`);
+    attrs["data-row-height"] = String(Math.round(h));
+  }
+  if (style.length) attrs.style = style.join("; ");
+  if (node.attrs.cantSplit) attrs["data-cant-split"] = "";
+  const rule = node.attrs.rowHeightRule as string | null;
+  if (rule) attrs["data-row-height-rule"] = rule;
+  return Object.keys(attrs).length ? ["tr", attrs, 0] : ["tr", 0];
+}
 
 /** Word tables: `borders` false for layout tables without gridlines. */
 const tables: Record<string, NodeSpec> = {
   ...cellNodes,
+  table_row: {
+    ...cellNodes.table_row,
+    attrs: {
+      rowHeight: { default: null },
+      rowHeightRule: { default: null },
+      cantSplit: { default: false },
+    },
+    parseDOM: [
+      {
+        tag: "tr",
+        getAttrs: (dom) => ({
+          rowHeight: dom.getAttribute("data-row-height")
+            ? Number(dom.getAttribute("data-row-height"))
+            : null,
+          rowHeightRule: dom.getAttribute("data-row-height-rule"),
+          cantSplit: dom.hasAttribute("data-cant-split"),
+        }),
+      },
+    ],
+    toDOM: tableRowDom,
+  },
   table: {
     ...cellNodes.table,
-    attrs: { borders: { default: true } },
-    parseDOM: [{ tag: "table", getAttrs: (dom) => ({ borders: !dom.hasAttribute("data-borderless") }) }],
-    toDOM: (node) => [
-      "table",
-      { class: "pm-table", "data-borderless": node.attrs.borders ? null : "" },
-      ["tbody", 0],
+    attrs: {
+      borders: { default: true },
+      width: { default: null },
+      widthPct: { default: null },
+      indent: { default: null },
+      align: { default: null },
+    },
+    parseDOM: [
+      {
+        tag: "table",
+        getAttrs: (dom) => ({
+          borders: !dom.hasAttribute("data-borderless"),
+          width: dom.getAttribute("data-width") ? Number(dom.getAttribute("data-width")) : null,
+          widthPct: dom.getAttribute("data-width-pct") ? Number(dom.getAttribute("data-width-pct")) : null,
+          indent: dom.getAttribute("data-indent") ? Number(dom.getAttribute("data-indent")) : null,
+          align: (dom.getAttribute("data-align") as "left" | "center" | "right" | null) ?? null,
+        }),
+      },
     ],
+    toDOM: (node) => {
+      const attrs = tableDomAttrs(node);
+      if (node.attrs.align) attrs["data-align"] = node.attrs.align as string;
+      return ["table", attrs, ["tbody", 0]];
+    },
   },
 };
 
@@ -217,7 +357,12 @@ const baseNodes: Record<string, NodeSpec> = {
   },
   paragraph: {
     /** `paraChange`: a tracked paragraph formatting revision (`ParagraphChange`). */
-    attrs: { format: { default: null }, paraChange: { default: null } },
+    attrs: {
+      format: { default: null },
+      paraChange: { default: null },
+      frame: { default: null },
+      floating: { default: false },
+    },
     content: "inline*",
     group: "block",
     parseDOM: [{ tag: "p", getAttrs: (dom) => blockAttrs(dom) }],
@@ -362,6 +507,9 @@ const baseNodes: Record<string, NodeSpec> = {
       title: { default: null },
       width: { default: null },
       height: { default: null },
+      /** VML absolute placement within the paragraph line (px). */
+      anchorX: { default: null },
+      anchorY: { default: null },
     },
     parseDOM: [
       {
@@ -372,12 +520,24 @@ const baseNodes: Record<string, NodeSpec> = {
           title: dom.getAttribute("title"),
           width: Number(dom.getAttribute("width")) || null,
           height: Number(dom.getAttribute("height")) || null,
+          anchorX: Number(dom.getAttribute("data-anchor-x")) || null,
+          anchorY: Number(dom.getAttribute("data-anchor-y")) || null,
         }),
       },
     ],
     toDOM: (node) => {
-      const { src, alt, title, width, height } = node.attrs;
-      return ["img", { class: "pm-image", src, alt, title, width, height }];
+      const { src, alt, title, width, height, anchorX, anchorY } = node.attrs;
+      const img: Record<string, string | number | null> = {
+        class: "pm-image",
+        src,
+        alt,
+        title,
+        width,
+        height,
+      };
+      if (anchorX != null) img["data-anchor-x"] = anchorX;
+      if (anchorY != null) img["data-anchor-y"] = anchorY;
+      return ["img", img];
     },
   },
   ...tables,

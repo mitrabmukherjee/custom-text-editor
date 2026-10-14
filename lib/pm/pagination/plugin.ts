@@ -2,7 +2,13 @@ import type { Node as PMNode } from "prosemirror-model";
 import { TableMap } from "prosemirror-tables";
 import { Plugin, PluginKey } from "prosemirror-state";
 import { Decoration, DecorationSet, type EditorView } from "prosemirror-view";
-import type { PageFrame, PageInfo, ParagraphFormat, SectionStart } from "../format";
+import {
+  type PageFrame,
+  type PageInfo,
+  type ParagraphFormat,
+  type SectionStart,
+  paragraphLineHeightPx,
+} from "../format";
 import { collectComments } from "../comments";
 import { collectChanges, type ChangeType } from "../track-changes/changes";
 import { SKIP_TRACKING } from "../track-changes/plugin";
@@ -205,6 +211,9 @@ function textLines(el: HTMLElement): Box[] {
     }
   }
   for (const inline of el.querySelectorAll<HTMLElement>(`${TAB_SELECTOR}, img`)) {
+    // Anchored VML signatures paint above the line; measuring them splits the paragraph
+    // into extra lines and page breaks shift when zoom changes layout/pagination.
+    if (inline.closest(".pm-image-anchored")) continue;
     const r = inline.getBoundingClientRect();
     if (r.height > 0) rects.push({ top: r.top, bottom: r.bottom });
   }
@@ -537,23 +546,26 @@ class PaginationView {
     view.state.doc.descendants((node, pos) => {
       const name = node.type.name;
       if (name === "page_break" || name === "section_break") {
-        const el = view.nodeDOM(pos) as HTMLElement | null;
-        if (el) {
-          const r = el.getBoundingClientRect();
-          lines.push({
-            top: natural(r.top),
-            bottom: natural(r.bottom),
-            breakAfter:
-              name === "page_break"
-                ? true
-                : (SECTION_BREAKS[node.attrs.start as SectionStart] ?? true),
-            block: block++,
-            section,
-            ref: { kind: "block", pos },
-            numbered: false,
-          });
-        }
+        const breakAfter =
+          name === "page_break"
+            ? true
+            : (SECTION_BREAKS[node.attrs.start as SectionStart] ?? true);
         if (name === "section_break") section += 1;
+        if (breakAfter) {
+          const el = view.nodeDOM(pos) as HTMLElement | null;
+          if (el) {
+            const r = el.getBoundingClientRect();
+            lines.push({
+              top: natural(r.top),
+              bottom: natural(r.bottom),
+              breakAfter,
+              block: block++,
+              section: name === "section_break" ? section - 1 : section,
+              ref: { kind: "block", pos },
+              numbered: false,
+            });
+          }
+        }
         return false;
       }
       if (node.type.spec.tableRole === "table") {
@@ -578,6 +590,23 @@ class PaginationView {
       const el = view.nodeDOM(pos) as HTMLElement | null;
       if (!el) return false;
 
+      if (node.type.name === "paragraph" && node.attrs.frame && node.attrs.floating) {
+        const wrap = el.classList.contains("pm-body-frame-wrap")
+          ? el
+          : el.closest<HTMLElement>(".pm-body-frame-wrap");
+        const anchor = wrap ?? el;
+        const top = natural(anchor.getBoundingClientRect().top);
+        lines.push({
+          top,
+          bottom: top,
+          block: block++,
+          section,
+          numbered: false,
+          ref: { kind: "block", pos },
+        });
+        return false;
+      }
+
       const format = node.attrs.format as ParagraphFormat | null;
       const keep = {
         block: block++,
@@ -588,7 +617,10 @@ class PaginationView {
         breakBefore: !!format?.pageBreakBefore,
         numbered: !format?.suppressLineNumbers,
       };
-      const lineHeight = parseFloat(getComputedStyle(el).lineHeight);
+      const computedLh = parseFloat(getComputedStyle(el).lineHeight);
+      const lineHeight =
+        paragraphLineHeightPx(format) ??
+        (Number.isFinite(computedLh) ? computedLh : undefined);
       const multiple =
         format?.lineRule === "auto" && (format.lineValue ?? 1) > 1 ? format.lineValue! : 1;
       const slackOf = (height: number) => height - height / multiple;
@@ -608,7 +640,8 @@ class PaginationView {
       }
       boxes.forEach((box, i) => {
         const glyphs = (box.bottom - box.top) / scale;
-        const height = Number.isFinite(lineHeight) ? Math.max(lineHeight, glyphs) : glyphs;
+        const height =
+          lineHeight !== undefined ? Math.max(lineHeight, glyphs) : glyphs;
         const top = natural(box.top) - (height - glyphs) / 2;
         lines.push({
           ...keep,

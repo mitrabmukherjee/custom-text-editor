@@ -1,19 +1,24 @@
 import { DOMParser } from "@xmldom/xmldom";
 import JSZip from "jszip";
-import type {
-  DocumentLayout,
-  HFFrame,
-  HFParagraph,
-  HFRun,
-  HeaderFooterSet,
-  LineNumbering,
-  ParagraphChange,
-  ParagraphFormat,
-  SectionLayout,
-  SectionStart,
-  StyleDefinition,
-  TabStop,
-  TextAlign,
+import {
+  PT_TO_PX,
+  type DocumentLayout,
+  type HFFrame,
+  type HFParagraph,
+  type HFRun,
+  type HeaderFooterSet,
+  type LineNumbering,
+  type ParagraphChange,
+  type ParagraphBorderSide,
+  type ParagraphFormat,
+  type SectionLayout,
+  type SectionStart,
+  type StyleDefinition,
+  type TabStop,
+  type TableAlign,
+  type TextAlign,
+  type CellBorderEdges,
+  type CellMarginPx,
 } from "@/lib/pm/format";
 import type { CommentReply, CommentThread } from "@/lib/pm/comments";
 import type { DocJSON, MarkJSON, NodeJSON } from "@/lib/pm/json";
@@ -138,6 +143,7 @@ type RawPara = {
   pageBreakBefore?: boolean;
   suppressLineNumbers?: boolean;
   contextualSpacing?: boolean;
+  boxBorder?: ParagraphFormat["boxBorder"];
 };
 
 type RawRun = {
@@ -179,6 +185,85 @@ function defined<T extends object>(obj: T): Partial<T> {
   ) as Partial<T>;
 }
 
+const BORDER_LINE: Record<string, ParagraphBorderSide["style"]> = {
+  single: "solid",
+  thick: "solid",
+  double: "double",
+  dotted: "dotted",
+  dashed: "dashed",
+  dotDash: "dashed",
+  dotDotDash: "dashed",
+};
+
+function parseBorderSide(el: XElement | undefined): ParagraphBorderSide | undefined {
+  if (!el) return undefined;
+  const val = attr(el, "val");
+  if (!val || val === "nil" || val === "none") return undefined;
+  const style = BORDER_LINE[val] ?? "solid";
+  const sz = num(el, "sz") ?? 4;
+  const color = attr(el, "color");
+  const space = num(el, "space");
+  return {
+    style,
+    widthPt: sz / 8,
+    color: color && color !== "auto" ? normalizeHex(`#${color}`) ?? `#${color}` : "#000000",
+    paddingPx: space !== undefined ? (space / 8) * PT_TO_PX : undefined,
+  };
+}
+
+function parseTcMarEl(tcMar: XElement | undefined): CellMarginPx | undefined {
+  if (!tcMar) return undefined;
+  const px = (name: string) => {
+    const el = child(tcMar, name);
+    const w = el ? num(el, "w") : undefined;
+    return w !== undefined ? Math.round(w / TWIPS_PER_PX) : undefined;
+  };
+  return defined({
+    top: px("top"),
+    right: px("right"),
+    bottom: px("bottom"),
+    left: px("left"),
+  });
+}
+
+function parseTcMar(tcPr: XElement | undefined): CellMarginPx | undefined {
+  return parseTcMarEl(child(tcPr, "tcMar"));
+}
+
+function parseTblCellMar(tblPr: XElement | undefined): CellMarginPx | undefined {
+  return parseTcMarEl(child(tblPr, "tblCellMar"));
+}
+
+function parseTcBorders(tcPr: XElement | undefined): CellBorderEdges | undefined {
+  const tcBorders = child(tcPr, "tcBorders");
+  if (!tcBorders) return undefined;
+  const sides = ["top", "right", "bottom", "left"] as const;
+  const out: CellBorderEdges = {};
+  for (const side of sides) {
+    const el = child(tcBorders, side);
+    if (!el) continue;
+    const val = attr(el, "val");
+    if (!val || val === "nil" || val === "none") out[side] = "none";
+    else {
+      const parsed = parseBorderSide(el);
+      if (parsed) out[side] = parsed;
+    }
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+function parsePBdr(pPr: XElement | undefined): ParagraphFormat["boxBorder"] | undefined {
+  const pBdr = child(pPr, "pBdr");
+  if (!pBdr) return undefined;
+  const box = defined({
+    top: parseBorderSide(child(pBdr, "top")),
+    right: parseBorderSide(child(pBdr, "right")),
+    bottom: parseBorderSide(child(pBdr, "bottom")),
+    left: parseBorderSide(child(pBdr, "left")),
+  });
+  return Object.keys(box).length ? box : undefined;
+}
+
 function parsePPr(pPr: XElement | undefined): RawPara {
   if (!pPr) return {};
   const ind = child(pPr, "ind");
@@ -207,6 +292,7 @@ function parsePPr(pPr: XElement | undefined): RawPara {
     pageBreakBefore: toggle(child(pPr, "pageBreakBefore")),
     suppressLineNumbers: toggle(child(pPr, "suppressLineNumbers")),
     contextualSpacing: toggle(child(pPr, "contextualSpacing")),
+    boxBorder: parsePBdr(pPr),
   });
 }
 
@@ -224,7 +310,12 @@ function parseRPr(rPr: XElement | undefined, theme: ThemeFonts): RawRun {
   const highlight = attr(child(rPr, "highlight"), "val");
   const fill = attr(child(rPr, "shd"), "fill");
   return defined({
-    font: attr(fonts, "ascii") ?? attr(fonts, "hAnsi") ?? themeFont ?? undefined,
+    font:
+      attr(fonts, "ascii") ??
+      attr(fonts, "hAnsi") ??
+      attr(fonts, "cs") ??
+      themeFont ??
+      undefined,
     size: sz,
     bold: toggle(child(rPr, "b")),
     italic: toggle(child(rPr, "i")),
@@ -513,6 +604,7 @@ function toFormat(
     suppressLineNumbers: p.suppressLineNumbers || undefined,
     pageBreakBefore: p.pageBreakBefore || undefined,
     contextualSpacing: p.contextualSpacing || undefined,
+    boxBorder: p.boxBorder,
     styleId: options.styleId,
   };
   return defined(format) as ParagraphFormat;
@@ -617,6 +709,8 @@ type Context = {
   ids: { next: number };
   /** Every `w:sectPr` in document order; the last is the body's. */
   sections: ParsedSection[];
+  /** Same order as `sections` (parallel preload). */
+  sectPrElements: XElement[];
   /** Section breaks emitted so far. */
   sectionIndex: number;
   comments: CommentImport;
@@ -628,6 +722,8 @@ type Context = {
   link: LinkTarget | null;
   /** Open complex fields, innermost last. */
   fields: { instr: string; result: boolean; link: LinkTarget | null }[];
+  /** Absolute VML signature from a pict-only paragraph, placed on the next underline line. */
+  pendingVmlSignature: { image: ImageJSON; frame: HFFrame } | null;
 };
 
 // —— Comments ——
@@ -958,7 +1054,14 @@ function firstNS(el: XElement, ns: string, name: string): XElement | undefined {
   return el.getElementsByTagNameNS(ns, name)[0];
 }
 
-type ImageJSON = { src: string; alt: string; width: number | null; height: number | null };
+type ImageJSON = {
+  src: string;
+  alt: string;
+  width: number | null;
+  height: number | null;
+  anchorX?: number | null;
+  anchorY?: number | null;
+};
 
 /** `w:drawing` (inline or anchored picture), shown inline. */
 function drawingImage(drawing: XElement, ctx: Context): ImageJSON | null {
@@ -980,18 +1083,113 @@ function drawingImage(drawing: XElement, ctx: Context): ImageJSON | null {
 
 const VML_NS = "urn:schemas-microsoft-com:vml";
 
+function vmlPtToPx(pt: number) {
+  return Math.round(pt * PT_TO_PX);
+}
+
+/** `v:shape` style on legacy `w:pict` (absolute signature images on Form 3). */
+function parseVmlShapeStyle(style: string): {
+  frame?: HFFrame;
+  width?: number;
+  height?: number;
+} {
+  if (!/position\s*:\s*absolute/i.test(style)) return {};
+  const pt = (prop: string) => {
+    const m = new RegExp(`${prop}:\\s*([\\d.]+)pt`, "i").exec(style);
+    return m ? vmlPtToPx(Number(m[1])) : undefined;
+  };
+  const x = pt("margin-left") ?? 0;
+  const y = pt("margin-top") ?? 0;
+  const width = pt("width");
+  const height = pt("height");
+  return {
+    width,
+    height,
+    frame: {
+      hAnchor: "text",
+      vAnchor: "text",
+      x,
+      y,
+      width,
+      height,
+    },
+  };
+}
+
+function paragraphPlainText(p: XElement): string {
+  return Array.from(p.getElementsByTagNameNS(W_NS, "t"), (t) => t.textContent ?? "").join("");
+}
+
+function findVmlPict(p: XElement): XElement | null {
+  for (const c of elements(p)) {
+    if (c.localName === "pict") return c;
+    if (c.localName === "r") {
+      for (const inner of elements(c)) {
+        if (inner.localName === "pict") return inner;
+      }
+    }
+  }
+  return null;
+}
+
+/** Pict-only paragraph with absolutely positioned VML (Form 3 signature carrier). */
+function isVmlSignatureCarrier(p: XElement): boolean {
+  const pict = findVmlPict(p);
+  if (!pict) return false;
+  const style = firstNS(pict, VML_NS, "shape")?.getAttribute("style") ?? "";
+  if (!/position\s*:\s*absolute/i.test(style)) return false;
+  return paragraphPlainText(p).replace(/\s/g, "").length === 0;
+}
+
+/** Underscore / tab line where Word draws the signature over the right-hand rule. */
+function isSignatureUnderlineParagraph(p: XElement): boolean {
+  const text = paragraphPlainText(p);
+  return /_{8,}/.test(text);
+}
+
+function consumeVmlSignatureCarrier(p: XElement, ctx: Context): boolean {
+  if (!isVmlSignatureCarrier(p)) return false;
+  const pict = findVmlPict(p)!;
+  const image = vmlImage(pict, ctx);
+  const frame = parseVmlShapeStyle(firstNS(pict, VML_NS, "shape")?.getAttribute("style") ?? "").frame;
+  if (!image || !frame) return false;
+  ctx.pendingVmlSignature = { image, frame };
+  return true;
+}
+
+function anchoredVmlImageAttrs(image: ImageJSON, frame: HFFrame): ImageJSON {
+  const h = image.height ?? frame.height ?? 48;
+  return {
+    ...image,
+    anchorX: frame.x ?? 0,
+    anchorY: -(h ?? 48) + 4,
+  };
+}
+
 /** Legacy VML picture (`w:pict` / `v:imagedata`). */
 function vmlImage(pict: XElement, ctx: Context): ImageJSON | null {
   const data = firstNS(pict, VML_NS, "imagedata");
-  const id = data && (data.getAttributeNS(R_NS, "id") || data.getAttribute("r:id"));
-  const src = id ? ctx.images.get(id) : undefined;
-  if (!src) return null;
+  const relId = data && (data.getAttributeNS(R_NS, "id") || data.getAttribute("r:id"));
+  const localId = data?.getAttribute("id") ?? data?.getAttributeNS(R_NS, "id");
+  const resolved =
+    (relId ? ctx.images.get(relId) : undefined) ??
+    (localId ? ctx.images.get(localId) : undefined);
+  if (!resolved) return null;
   const style = firstNS(pict, VML_NS, "shape")?.getAttribute("style") ?? "";
+  const sized = parseVmlShapeStyle(style);
   const size = (prop: string) => {
-    const m = new RegExp(`${prop}:\\s*([\\d.]+)pt`).exec(style);
-    return m ? Math.round(Number(m[1]) / 0.75) : null;
+    const pt = new RegExp(`${prop}:\\s*([\\d.]+)pt`, "i").exec(style);
+    if (pt) return vmlPtToPx(Number(pt[1]));
+    const px = new RegExp(`${prop}:\\s*([\\d.]+)px`, "i").exec(style);
+    if (px) return Math.round(Number(px[1]));
+    return null;
   };
-  return { src, alt: data?.getAttribute("o:title") ?? "", width: size("width"), height: size("height") };
+  return {
+    src: resolved,
+    alt: data?.getAttribute("o:title") ?? "",
+    width: sized.width ?? size("width"),
+    height: sized.height ?? size("height"),
+  };
 }
 
 function walkInline(el: XElement, b: ParagraphBuilder, change: MarkJSON | null, ctx: Context) {
@@ -1077,15 +1275,38 @@ function paragraphChange(
 
 function walkParagraph(p: XElement, blocks: Block[], ctx: Context) {
   const pPr = child(p, "pPr");
+  if (consumeVmlSignatureCarrier(p, ctx)) {
+    const sectPr = child(pPr, "sectPr");
+    if (sectPr) {
+      const index = ctx.sectionIndex++;
+      blocks.push({
+        node: {
+          type: "section_break",
+          attrs: {
+            start: sectPrStartType(sectPr, index > 0 ? ctx.sectPrElements[index - 1] : null),
+            section: ctx.sections[index]?.layout ?? null,
+          },
+        },
+      });
+    }
+    return;
+  }
   const numPr = child(pPr, "numPr");
   const numId = attr(child(numPr, "numId"), "val");
   const ilvl = Number(attr(child(numPr, "ilvl"), "val") ?? 0);
   const list: ListInfo | undefined =
     numId && numId !== "0" ? { ...ctx.listLevel(numId, ilvl), level: ilvl } : undefined;
   const { styleId, format } = resolveParagraph(pPr, ctx, !!list);
+  const attachVmlSignature = !!(ctx.pendingVmlSignature && isSignatureUnderlineParagraph(p));
+  const paragraphFormat = attachVmlSignature ? { ...format, keepLines: true } : format;
+  const frame = parseFrame(child(pPr, "framePr"));
   const level = headingLevel(ctx.styles.styleName(styleId));
-  const paraChange = paragraphChange(pPr, format, !!list, ctx);
-  const attrs = paraChange ? { format, paraChange } : { format };
+  const paraChange = paragraphChange(pPr, paragraphFormat, !!list, ctx);
+  const attrs = {
+    format: paragraphFormat,
+    ...(paraChange ? { paraChange } : {}),
+    ...(frame ? { frame, floating: true } : {}),
+  };
 
   const make = (content: NodeJSON[]): Block => {
     const body = content.length ? { content } : {};
@@ -1097,16 +1318,22 @@ function walkParagraph(p: XElement, blocks: Block[], ctx: Context) {
     family: format.fontFamily ?? DEFAULT_FONT,
     size: format.fontSize ?? DEFAULT_FONT_SIZE_PT,
   });
+  if (attachVmlSignature) {
+    const pending = ctx.pendingVmlSignature!;
+    ctx.pendingVmlSignature = null;
+    builder.inlineNode("image", [], anchoredVmlImageAttrs(pending.image, pending.frame));
+  }
   walkInline(p, builder, null, ctx);
   builder.end();
 
-  if (child(pPr, "sectPr")) {
+  const sectPr = child(pPr, "sectPr");
+  if (sectPr) {
     const index = ctx.sectionIndex++;
     blocks.push({
       node: {
         type: "section_break",
         attrs: {
-          start: ctx.sections[index + 1]?.start ?? "nextPage",
+          start: sectPrStartType(sectPr, index > 0 ? ctx.sectPrElements[index - 1] : null),
           section: ctx.sections[index]?.layout ?? null,
         },
       },
@@ -1142,6 +1369,43 @@ function walkBody(el: XElement, blocks: Block[], ctx: Context) {
 
 const NO_BORDER = new Set(["nil", "none"]);
 
+const TABLE_JC: Record<string, TableAlign> = {
+  center: "center",
+  right: "right",
+  end: "right",
+  left: "left",
+  start: "left",
+};
+
+function parseTableWidth(
+  tblPr: XElement | undefined,
+  gridSumPx: number,
+): { width?: number; widthPct?: number } {
+  const tblW = child(tblPr, "tblW");
+  if (!tblW) return gridSumPx > 0 ? { width: Math.round(gridSumPx) } : {};
+  const type = attr(tblW, "type") ?? "auto";
+  const w = num(tblW, "w");
+  if (w === undefined) return {};
+  if (type === "pct") return { widthPct: w / 50 };
+  if (type === "dxa") return { width: Math.round(w / TWIPS_PER_PX) };
+  if (type === "auto" && gridSumPx > 0) return { width: Math.round(gridSumPx) };
+  return {};
+}
+
+function parseTableLayout(tblPr: XElement | undefined, gridSumPx: number) {
+  const { width, widthPct } = parseTableWidth(tblPr, gridSumPx);
+  const ind = child(tblPr, "tblInd");
+  const indent = ind ? Math.round((num(ind, "w") ?? 0) / TWIPS_PER_PX) : undefined;
+  const jc = attr(child(tblPr, "jc"), "val");
+  const align = jc ? TABLE_JC[jc] : undefined;
+  return defined({
+    width,
+    widthPct,
+    indent,
+    align,
+  });
+}
+
 /** Whether a table shows gridlines: its own `tblBorders`, else a "…Grid…" table style. */
 function tableHasBorders(tblPr: XElement | undefined): boolean {
   const borders = child(tblPr, "tblBorders");
@@ -1153,6 +1417,8 @@ const VALIGN: Record<string, string> = { center: "middle", bottom: "bottom" };
 
 /** A Word table; vertically merged cells (`w:vMerge`) become `rowspan`. */
 function walkTable(tbl: XElement, ctx: Context): NodeJSON | null {
+  const tblPr = child(tbl, "tblPr");
+  const defaultCellMargin = parseTblCellMar(tblPr);
   const grid = elements(child(tbl, "tblGrid") ?? tbl)
     .filter((g) => g.localName === "gridCol")
     .map((g) => (num(g, "w") ?? 0) / TWIPS_PER_PX);
@@ -1160,8 +1426,17 @@ function walkTable(tbl: XElement, ctx: Context): NodeJSON | null {
   const merging = new Map<number, NodeJSON & { attrs: Record<string, unknown> }>();
   const rows: NodeJSON[] = [];
   for (const tr of elements(tbl).filter((r) => r.localName === "tr")) {
+    const trPr = child(tr, "trPr");
+    const trHeightEl = child(trPr, "trHeight");
+    const trHeightVal = trHeightEl ? num(trHeightEl, "val") : undefined;
+    const rowHeight =
+      trHeightVal !== undefined ? Math.round(trHeightVal / TWIPS_PER_PX) : undefined;
+    const hRule = trHeightEl ? attr(trHeightEl, "hRule") : undefined;
+    const rowHeightRule =
+      hRule === "exact" || hRule === "atLeast" || hRule === "auto" ? hRule : undefined;
+    const cantSplit = toggle(child(trPr, "cantSplit"));
     const cells: NodeJSON[] = [];
-    let col = num(child(child(tr, "trPr"), "gridBefore"), "val") ?? 0;
+    let col = num(child(trPr, "gridBefore"), "val") ?? 0;
     for (const tc of elements(tr).filter((x) => x.localName === "tc")) {
       const tcPr = child(tc, "tcPr");
       const span = Math.max(1, num(child(tcPr, "gridSpan"), "val") ?? 1);
@@ -1186,6 +1461,8 @@ function walkTable(tbl: XElement, ctx: Context): NodeJSON | null {
           colwidth: widths.length === span && widths.every((w) => w > 0) ? widths.map(Math.round) : null,
           background: fill && fill !== "auto" ? normalizeHex(`#${fill}`) : null,
           valign: VALIGN[attr(child(tcPr, "vAlign"), "val") ?? ""] ?? null,
+          edges: parseTcBorders(tcPr) ?? null,
+          cellMargin: parseTcMar(tcPr) ?? defaultCellMargin ?? null,
         } as Record<string, unknown>,
         content: content.length ? content : [{ type: "paragraph" }],
       };
@@ -1196,10 +1473,22 @@ function walkTable(tbl: XElement, ctx: Context): NodeJSON | null {
       cells.push(cell);
       col += span;
     }
-    if (cells.length) rows.push({ type: "table_row", content: cells });
+    if (cells.length) {
+      rows.push({
+        type: "table_row",
+        attrs: defined({ rowHeight, rowHeightRule, cantSplit: cantSplit || undefined }),
+        content: cells,
+      });
+    }
   }
   if (!rows.length) return null;
-  return { type: "table", attrs: { borders: tableHasBorders(child(tbl, "tblPr")) }, content: rows };
+  const gridSumPx = grid.reduce((a, b) => a + b, 0);
+  const layout = parseTableLayout(tblPr, gridSumPx);
+  return {
+    type: "table",
+    attrs: { borders: tableHasBorders(tblPr), ...layout },
+    content: rows,
+  };
 }
 
 /**
@@ -1457,11 +1746,31 @@ const SECTION_STARTS: Record<string, SectionStart> = {
   oddPage: "oddPage",
 };
 
+function sectPrColumnCount(sectPr: XElement): number {
+  return num(child(sectPr, "cols"), "num") ?? 1;
+}
+
+/** Page size and columns only — margin/header-only section changes stay on the same page in Word. */
+function sectPrPageSizeKey(sectPr: XElement): string {
+  const pgSz = child(sectPr, "pgSz");
+  return [attr(pgSz, "w"), attr(pgSz, "h"), String(sectPrColumnCount(sectPr))].join("|");
+}
+
+/** How the following section starts (`w:sectPr/w:type`), including single-column `nextColumn`. */
+export function sectPrStartType(sectPr: XElement, previous?: XElement | null): SectionStart {
+  const raw = attr(child(sectPr, "type"), "val");
+  if (raw === "nextColumn" && sectPrColumnCount(sectPr) <= 1) return "continuous";
+  if (raw) return SECTION_STARTS[raw] ?? "nextPage";
+  if (!previous || sectPrPageSizeKey(sectPr) === sectPrPageSizeKey(previous)) return "continuous";
+  return "nextPage";
+}
+
 async function parseSection(
   sectPr: XElement,
   zip: JSZip,
   rels: Map<string, string>,
   ctx: Context,
+  previous?: XElement | null,
 ): Promise<ParsedSection> {
   const pgMar = child(sectPr, "pgMar");
   const cols = child(sectPr, "cols");
@@ -1480,7 +1789,7 @@ async function parseSection(
       colCount > 1 ? { count: colCount, space: twipsPx(num(cols, "space")) ?? 48 } : undefined,
   }) as SectionLayout;
   return {
-    start: SECTION_STARTS[attr(child(sectPr, "type"), "val") ?? "nextPage"] ?? "nextPage",
+    start: sectPrStartType(sectPr, previous),
     layout,
   };
 }
@@ -1496,6 +1805,12 @@ function sectionProperties(body: XElement): XElement[] {
       } else if (c.localName === "sdt") {
         const content = child(c, "sdtContent");
         if (content) visit(content);
+      } else if (c.localName === "tbl") {
+        for (const tr of elements(c).filter((r) => r.localName === "tr")) {
+          for (const tc of elements(tr).filter((x) => x.localName === "tc")) {
+            visit(tc);
+          }
+        }
       } else if (c.localName === "sectPr" && el === body) {
         out.push(c);
       }
@@ -1560,6 +1875,7 @@ export async function importDocx(
     listLevel: parseNumbering(await read("word/numbering.xml")),
     ids: { next: 1 },
     sections: [],
+    sectPrElements: [],
     sectionIndex: 0,
     comments: parseComments(
       await read("word/comments.xml"),
@@ -1569,6 +1885,7 @@ export async function importDocx(
     images: await loadImages(zip, rels),
     link: null,
     fields: [],
+    pendingVmlSignature: null,
   };
 
   const root = parseXml(documentXml);
@@ -1576,7 +1893,10 @@ export async function importDocx(
   if (!body) throw new Error("Invalid DOCX: document body is missing");
 
   const sectPrs = sectionProperties(body);
-  for (const sectPr of sectPrs) ctx.sections.push(await parseSection(sectPr, zip, rels, ctx));
+  ctx.sectPrElements = sectPrs;
+  for (let i = 0; i < sectPrs.length; i++) {
+    ctx.sections.push(await parseSection(sectPrs[i], zip, rels, ctx, i > 0 ? sectPrs[i - 1] : null));
+  }
   inheritHeaderFooters(ctx.sections, ctx.settings.evenAndOddHeaders);
 
   const blocks: Block[] = [];

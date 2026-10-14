@@ -36,6 +36,7 @@ import { nextParagraph } from "../styles";
 import { shiftTabInTable, tabInTable, tablePlugins } from "../tables";
 import { toggleTrackChanges } from "../track-changes/plugin";
 import { contextualSpacingPlugin } from "./contextualSpacing";
+import { framedParagraphPlugin } from "./framedParagraph";
 import { imagePlugin, linkClickPlugin } from "./objects";
 import { pastePlugin } from "./paste";
 import { placeholderPlugin } from "./placeholder";
@@ -151,5 +152,6 @@ export function basePlugins(options: { placeholder: string }): Plugin[] {
     ...tablePlugins(),
     imagePlugin(),
     linkClickPlugin(),
+    framedParagraphPlugin(),
   ];
 }

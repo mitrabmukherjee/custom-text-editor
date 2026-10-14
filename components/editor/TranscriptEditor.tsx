@@ -126,6 +126,37 @@ export function TranscriptEditor(props: TranscriptEditorProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const paperRef = useRef<HTMLDivElement>(null);
   const zoomRef = useRef(zoom);
+  type ZoomScrollSnap =
+    | { kind: "proportion"; scrollTop: number; scrollHeight: number }
+    | { kind: "point"; clientY: number; scrollTop: number; uy: number };
+  const zoomScrollRef = useRef<ZoomScrollSnap | null>(null);
+
+  const setZoomPreservingScroll = useCallback(
+    (next: number | ((z: number) => number), clientY?: number) => {
+      const el = scrollRef.current;
+      const paper = paperRef.current;
+      if (el) {
+        if (clientY !== undefined && paper) {
+          const paperTop = paper.getBoundingClientRect().top;
+          const oldZoom = zoomRef.current;
+          zoomScrollRef.current = {
+            kind: "point",
+            clientY,
+            scrollTop: el.scrollTop,
+            uy: (clientY - paperTop) / oldZoom,
+          };
+        } else {
+          zoomScrollRef.current = {
+            kind: "proportion",
+            scrollTop: el.scrollTop,
+            scrollHeight: el.scrollHeight,
+          };
+        }
+      }
+      setZoom(next);
+    },
+    [setZoom],
+  );
 
   const mountRef = useCallback(
     (el: HTMLDivElement | null) => {
@@ -202,18 +233,41 @@ export function TranscriptEditor(props: TranscriptEditorProps) {
     const onWheel = (e: WheelEvent) => {
       if (!e.ctrlKey || !e.deltaY) return;
       e.preventDefault();
-      setZoom((z) => z + (e.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP));
+      setZoomPreservingScroll(
+        (z) => z + (e.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP),
+        e.clientY,
+      );
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, [setZoom]);
+  }, [setZoomPreservingScroll]);
 
-  // Keep the same part of the document in view when zooming.
+  // Keep the same document point under the cursor (wheel) or scroll fraction (slider).
   useLayoutEffect(() => {
     const el = scrollRef.current;
+    const paper = paperRef.current;
     const prev = zoomRef.current;
     zoomRef.current = zoom;
-    if (el && prev !== zoom) el.scrollTop = (el.scrollTop * zoom) / prev;
+    if (!el || prev === zoom) return;
+    const snap = zoomScrollRef.current;
+    zoomScrollRef.current = null;
+
+    const apply = () => {
+      if (!el) return;
+      if (snap?.kind === "point" && paper) {
+        const top = paper.getBoundingClientRect().top;
+        el.scrollTop = snap.scrollTop + top + snap.uy * zoom - snap.clientY;
+      } else if (snap?.kind === "proportion" && snap.scrollHeight > 0) {
+        el.scrollTop = (snap.scrollTop / snap.scrollHeight) * el.scrollHeight;
+      } else {
+        el.scrollTop = (el.scrollTop * zoom) / prev;
+      }
+    };
+
+    apply();
+    // Pagination may remeasure after zoom; re-anchor once layout settles.
+    const raf = requestAnimationFrame(apply);
+    return () => cancelAnimationFrame(raf);
   }, [zoom]);
 
   useEffect(() => {
@@ -447,7 +501,7 @@ export function TranscriptEditor(props: TranscriptEditorProps) {
         actions={studioActions}
         simpleMarkup={simpleMarkup}
         onSimpleMarkupChange={setSimpleMarkup}
-        view={{ zoom, setZoom, navigation, setNavigation, ruler, setRuler }}
+        view={{ zoom, setZoom: setZoomPreservingScroll, navigation, setNavigation, ruler, setRuler }}
         review={{
           markup,
           setMarkup,
@@ -541,7 +595,7 @@ export function TranscriptEditor(props: TranscriptEditorProps) {
           readOnly={!editable || controller.isTrackingLocked()}
           onToggleTracking={() => controller.setTrackChanges(!controller.isTracking())}
           zoom={zoom}
-          onZoom={setZoom}
+          onZoom={setZoomPreservingScroll}
         />
       )}
       {hfDialog && controller && (

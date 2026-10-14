@@ -130,10 +130,20 @@ export function computePageBreaks(
     return t > pageStart ? t : i;
   };
 
+  const lineFrame = (line: LayoutLine, pageIndex: number) => {
+    const section = line.section ?? 0;
+    const base = pages[pageIndex];
+    return frame({
+      section,
+      number: base?.number ?? 1,
+      first: base?.section === section ? (base?.first ?? false) : false,
+    });
+  };
+
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
-    const pageBottom = page * stride + setup.height - frame(pages[page]).bottom;
+    const pageBottom = page * stride + setup.height - lineFrame(line, page).bottom;
     const overflows = line.bottom - (line.slack ?? 0) + shift > pageBottom + 0.5;
     const breakBefore = !!line.breakBefore && i > pageStart && firstOf(i) === i;
 
@@ -144,7 +154,7 @@ export function computePageBreaks(
       if (forceNext === "odd" && (page + 1) % 2 === 0) page += 1;
       if (forceNext === "even" && (page + 1) % 2 === 1) page += 1;
       startPage(page, lines[target].section ?? 0);
-      const height = page * stride + frame(pages[page]).top - (lines[target].top + shift);
+      const height = page * stride + lineFrame(lines[target], page).top - (lines[target].top + shift);
       breaks.push({ lineIndex: target, height, forced });
       shift += height;
       pageStart = target;
@@ -161,12 +171,6 @@ export function computePageBreaks(
     };
     if (placed.breakAfter) forceNext = placed.breakAfter;
     i += 1;
-  }
-
-  // A hard break at the very end still starts an (empty) new page.
-  if (forceNext) {
-    page += 1;
-    startPage(page, pages[page - 1].section);
   }
 
   return { breaks, pageCount: page + 1, placements, pages };

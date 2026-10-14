@@ -35,6 +35,7 @@ import {
   VerticalAlignTable,
   VerticalPositionAlign,
   WidthType,
+  HeightRule,
   type ICommentOptions,
   type IFrameOptions,
   type IParagraphOptions,
@@ -53,6 +54,8 @@ import type {
 } from "@/lib/pm/format";
 import type { CommentReply, CommentThread } from "@/lib/pm/comments";
 import type { DocJSON, MarkJSON, NodeJSON } from "@/lib/pm/json";
+import { exportCellBorders, exportParagraphBorders } from "./borderExport";
+import type { CellBorderEdges, CellMarginPx } from "@/lib/pm/format";
 import { TWIPS_PER_PX, type PageSetup } from "@/lib/pm/pagination/pageSetup";
 import { BULLET_CHARS, type BulletStyle, type NumFormat } from "@/lib/pm/schema";
 import { stylesOf } from "@/lib/pm/styles";
@@ -65,6 +68,12 @@ export type ExportDocxOptions = {
 };
 
 const LIST_INDENT = 720;
+
+const ROW_HEIGHT_RULE = {
+  exact: HeightRule.EXACT,
+  atLeast: HeightRule.ATLEAST,
+  auto: HeightRule.AUTO,
+} as const;
 
 const HEADINGS = [
   HeadingLevel.HEADING_1,
@@ -171,8 +180,9 @@ function runFormatOptions(format: RunFormat, font: RunFont) {
 function paragraphOptions(
   format: ParagraphFormat | null | undefined,
   styleIds?: ReadonlySet<string>,
+  frame?: HFFrame | null,
 ): IParagraphOptions {
-  if (!format) return {};
+  if (!format) return frame ? { frame: frameOptions(frame) } : {};
   const first = format.indentFirstLine ?? 0;
   const lineRule = format.lineRule ?? "auto";
   return {
@@ -209,6 +219,8 @@ function paragraphOptions(
     pageBreakBefore: format.pageBreakBefore,
     contextualSpacing: format.contextualSpacing,
     run: fontOptions(format),
+    border: exportParagraphBorders(format.boxBorder),
+    ...(frame ? { frame: frameOptions(frame) } : {}),
   };
 }
 
@@ -218,7 +230,11 @@ function trackedParagraphOptions(
   ids: { next: number },
   styleIds?: ReadonlySet<string>,
 ): IParagraphOptions {
-  const options = paragraphOptions(node.attrs?.format as ParagraphFormat | null | undefined, styleIds);
+  const options = paragraphOptions(
+    node.attrs?.format as ParagraphFormat | null | undefined,
+    styleIds,
+    node.attrs?.frame as HFFrame | null | undefined,
+  );
   const change = node.attrs?.paraChange as ParagraphChange | null | undefined;
   if (!change) return options;
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -563,9 +579,22 @@ class BlockBuilder {
   }
 
   private table(node: NodeJSON): Table {
-    const rows = (node.content ?? []).map(
-      (row) => new TableRow({ children: (row.content ?? []).map((cell) => this.cell(cell)) }),
-    );
+    const rows = (node.content ?? []).map((row) => {
+      const rAttrs = (row.attrs ?? {}) as Record<string, unknown>;
+      const rowHeight = rAttrs.rowHeight as number | undefined;
+      const rowHeightRule = rAttrs.rowHeightRule as keyof typeof ROW_HEIGHT_RULE | undefined;
+      return new TableRow({
+        children: (row.content ?? []).map((cell) => this.cell(cell)),
+        cantSplit: rAttrs.cantSplit ? true : undefined,
+        height:
+          rowHeight && rowHeight > 0
+            ? {
+                value: twips(rowHeight),
+                rule: (rowHeightRule && ROW_HEIGHT_RULE[rowHeightRule]) ?? HeightRule.ATLEAST,
+              }
+            : undefined,
+      });
+    });
     const firstRow = node.content?.[0]?.content ?? [];
     const widths = firstRow.flatMap((cell) => {
       const colwidth = cell.attrs?.colwidth as number[] | null | undefined;
@@ -573,13 +602,32 @@ class BlockBuilder {
       return colwidth?.length === span ? colwidth : Array<number>(span).fill(0);
     });
     const known = widths.length > 0 && widths.every((w) => w > 0);
+    const tAttrs = (node.attrs ?? {}) as Record<string, unknown>;
+    const tableWidthPx = tAttrs.width as number | undefined;
+    const tableWidthPct = tAttrs.widthPct as number | undefined;
+    const sumPx = widths.reduce((a, b) => a + b, 0);
+    const width =
+      tableWidthPx !== undefined && tableWidthPx > 0
+        ? { size: Math.round(tableWidthPx * TWIPS_PER_PX), type: WidthType.DXA }
+        : tableWidthPct !== undefined && tableWidthPct > 0
+          ? { size: Math.round(tableWidthPct * 50), type: WidthType.PERCENTAGE }
+          : known
+            ? { size: Math.round(sumPx * TWIPS_PER_PX), type: WidthType.DXA }
+            : undefined;
+    const align = tAttrs.align as string | undefined;
+    const indentPx = tAttrs.indent as number | undefined;
     return new Table({
       rows,
       columnWidths: known ? widths.map((w) => Math.round(w * TWIPS_PER_PX)) : undefined,
-      width: known
-        ? { size: Math.round(widths.reduce((a, b) => a + b, 0) * TWIPS_PER_PX), type: WidthType.DXA }
-        : undefined,
+      width,
       borders: node.attrs?.borders === false ? TableBorders.NONE : undefined,
+      alignment:
+        align === "center"
+          ? AlignmentType.CENTER
+          : align === "right"
+            ? AlignmentType.RIGHT
+            : undefined,
+      indent: indentPx ? { size: twips(indentPx), type: WidthType.DXA } : undefined,
     });
   }
 
@@ -592,6 +640,8 @@ class BlockBuilder {
     const attrs = (cell.attrs ?? {}) as Record<string, unknown>;
     const colwidth = attrs.colwidth as number[] | null | undefined;
     const background = typeof attrs.background === "string" ? attrs.background : null;
+    const cellMargin = attrs.cellMargin as CellMarginPx | null | undefined;
+    const edges = attrs.edges as CellBorderEdges | null | undefined;
     return new TableCell({
       children,
       columnSpan: Number(attrs.colspan ?? 1) > 1 ? Number(attrs.colspan) : undefined,
@@ -608,6 +658,15 @@ class BlockBuilder {
           : attrs.valign === "bottom"
             ? VerticalAlignTable.BOTTOM
             : undefined,
+      margins: cellMargin
+        ? {
+            top: cellMargin.top ? twips(cellMargin.top) : undefined,
+            right: cellMargin.right ? twips(cellMargin.right) : undefined,
+            bottom: cellMargin.bottom ? twips(cellMargin.bottom) : undefined,
+            left: cellMargin.left ? twips(cellMargin.left) : undefined,
+          }
+        : undefined,
+      borders: exportCellBorders(edges),
     });
   }
 
@@ -962,7 +1021,11 @@ export async function exportDocx(
     numbering: { config: builder.numbering.config() },
     comments: { children: comments.options() },
     sections: chunks.map((chunk, i) => ({
-      properties: sectionProperties(chunk.layout, setup, i === 0 ? "nextPage" : chunk.start),
+      properties: sectionProperties(
+        chunk.layout,
+        setup,
+        i + 1 < chunks.length ? chunks[i + 1].start : "nextPage",
+      ),
       ...headerFooterOptions(layout ? chunk.layout : null),
       children: chunk.paragraphs,
     })),

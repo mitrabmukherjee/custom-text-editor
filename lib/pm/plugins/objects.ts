@@ -30,12 +30,25 @@ class ImageView implements NodeView {
   }
 
   private render() {
-    const { src, alt, title, width, height } = this.node.attrs;
+    const { src, alt, title, width, height, anchorX, anchorY } = this.node.attrs;
     this.img.src = src;
     this.img.alt = alt ?? "";
     if (title) this.img.title = title;
     this.img.style.width = width ? `${width}px` : "";
     this.img.style.height = height ? `${height}px` : "";
+    const anchored = anchorX != null || anchorY != null;
+    this.dom.classList.toggle("pm-image-anchored", anchored);
+    if (anchored) {
+      this.dom.style.cssText = "";
+      this.img.style.position = "absolute";
+      this.img.style.left = anchorX != null ? `${anchorX}px` : "0";
+      this.img.style.top = anchorY != null ? `${anchorY}px` : "0";
+    } else {
+      this.dom.style.cssText = "";
+      this.img.style.position = "";
+      this.img.style.left = "";
+      this.img.style.top = "";
+    }
   }
 
   private startResize(e: PointerEvent) {

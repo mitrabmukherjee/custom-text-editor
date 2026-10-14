@@ -313,9 +313,25 @@
   font-weight: inherit;
 }
 
-/* Word's "View Gridlines" for tables without borders. */
-.transcript-editor-root .ProseMirror .pm-table[data-borderless] :is(td, th) {
-  border: 1px dashed #3f3f46;
+/* Borderless tables: no cell chrome (matches Word print layout; use cell tcBorders / selection). */
+.transcript-editor-root .ProseMirror .pm-table[data-borderless] :is(td, th):not([data-cell-edges]) {
+  border: none;
+}
+
+.transcript-editor-root .ProseMirror .pm-table :is(td, th)[data-cell-edges] {
+  border-style: solid;
+}
+
+.transcript-editor-root .ProseMirror .pm-body-frame-wrap {
+  position: relative;
+  height: 0;
+  overflow: visible;
+  margin: 0;
+  padding: 0;
+}
+
+.transcript-editor-root .ProseMirror .pm-body-frame {
+  margin: 0;
 }
 
 .transcript-editor-root .ProseMirror .pm-table tr.pm-page-break-widget {
@@ -385,14 +401,55 @@
   display: block;
 }
 
+/* VML signatures: zero-size inline anchor, picture positioned with anchorX/Y. */
+.transcript-editor-root .ProseMirror .pm-image-wrap.pm-image-anchored {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  overflow: visible;
+  margin: 0;
+  padding: 0;
+  vertical-align: baseline;
+}
+
 /* —— Word formatting (imported DOCX) ——
    Word hangs trailing spaces past the margin and only kerns runs with w:kern. */
+.transcript-editor-root .paper--word .studio-page-surface {
+  background-color: #fff;
+  border-color: #e4e4e7;
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 0.06),
+    0 12px 32px rgb(0 0 0 / 0.12);
+}
+
 .transcript-editor-root .paper--word .ProseMirror {
   font-family: "Times New Roman", Times, "Liberation Serif", serif;
   font-size: 10pt;
   line-height: 1.15;
   white-space: pre-wrap;
   font-kerning: none;
+  color: #18181b;
+}
+
+.transcript-editor-root .paper--word .studio-hf,
+.transcript-editor-root .paper--word .studio-line-number {
+  color: #52525b;
+}
+
+.transcript-editor-root .paper--word a.pm-link {
+  color: #0563c1;
+}
+
+.transcript-editor-root .paper--word .pm-table :is(td, th)[data-valign="bottom"] {
+  vertical-align: bottom;
+}
+
+.transcript-editor-root .paper--word .pm-table :is(td, th)[data-valign="middle"] {
+  vertical-align: middle;
+}
+
+.transcript-editor-root .paper--word .pm-table :is(td, th) .pm-image-wrap {
+  vertical-align: bottom;
 }
 
 .transcript-editor-root .ProseMirror [data-pm-format] {
@@ -462,25 +519,34 @@
   border-top-color: #60a5fa;
 }
 
-/* —— Section break: takes no space, like Word's formatting mark —— */
+/* —— Section break: invisible in the flow; show only when selected (Word formatting marks) —— */
 .ProseMirror hr.pm-section-break-node {
   position: relative;
   height: 0;
   margin: 0;
   border: 0;
+  overflow: hidden;
+}
+
+.ProseMirror hr.pm-section-break-node::before,
+.ProseMirror hr.pm-section-break-node::after {
+  content: none;
+}
+
+.ProseMirror hr.pm-section-break-node.ProseMirror-selectednode {
   overflow: visible;
 }
 
-.ProseMirror hr.pm-section-break-node::before {
+.ProseMirror hr.pm-section-break-node.ProseMirror-selectednode::before {
   content: "";
   position: absolute;
   left: 0;
   right: 0;
   top: -1px;
-  border-top: 2px double #71717a;
+  border-top: 2px double #60a5fa;
 }
 
-.ProseMirror hr.pm-section-break-node::after {
+.ProseMirror hr.pm-section-break-node.ProseMirror-selectednode::after {
   content: attr(data-label);
   position: absolute;
   left: 50%;
@@ -492,10 +558,6 @@
   line-height: 1.4;
   color: #a1a1aa;
   background: #141414;
-}
-
-.ProseMirror hr.pm-section-break-node.ProseMirror-selectednode::before {
-  border-top-color: #60a5fa;
 }
 
 /* —— Paragraph spacing suppressed by contextualSpacing —— */
