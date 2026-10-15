@@ -36,17 +36,20 @@ import {
   VerticalPositionAlign,
   WidthType,
   HeightRule,
+  BorderStyle,
   type ICommentOptions,
   type IFrameOptions,
   type IParagraphOptions,
   type IRunOptions,
   type ParagraphChild,
 } from "docx";
-import type {
-  DocumentLayout,
-  HFFrame,
-  HFParagraph,
-  ParagraphChange,
+import {
+  isHFTable,
+  type DocumentLayout,
+  type HFFrame,
+  type HFBlock,
+  type HFParagraph,
+  type ParagraphChange,
   ParagraphFormat,
   SectionLayout,
   SectionStart,
@@ -101,7 +104,7 @@ const TAB_TYPE = {
 type ChangeAttrs = { authorName?: string; date?: string };
 
 /** Run font (from the paragraph mark or a textStyle mark). */
-type RunFont = { fontFamily?: string | null; fontSize?: number | null };
+type RunFont = { fontFamily?: string | null; fontSize?: number | null; fontKern?: boolean | null };
 
 function twips(px: number) {
   return Math.round(px * TWIPS_PER_PX);
@@ -139,6 +142,7 @@ function runFormatOfJSON(marks: MarkJSON[] | undefined): RunFormat {
     highlight: (attrs("highlight")?.color as string | undefined) ?? null,
     caps: (attrs("caps")?.style as RunFormat["caps"]) ?? null,
     vertAlign: (attrs("vertAlign")?.align as RunFormat["vertAlign"]) ?? null,
+    fontKern: style?.fontKern ? true : null,
   };
 }
 
@@ -170,6 +174,7 @@ function runFormatOptions(format: RunFormat, font: RunFont) {
     smallCaps: f.caps === "small" || undefined,
     superScript: f.vertAlign === "superscript" || undefined,
     subScript: f.vertAlign === "subscript" || undefined,
+    ...(f.fontKern ? { kern: 32 } : {}),
   } satisfies IRunOptions;
 }
 
@@ -415,7 +420,9 @@ class RunBuilder {
   }
 
   private image(node: NodeJSON): ParagraphChild | null {
-    const { src, alt, width, height } = (node.attrs ?? {}) as Record<string, unknown>;
+    const attrs = (node.attrs ?? {}) as Record<string, unknown>;
+    if (attrs.vmlAnchor) return null;
+    const { src, alt, width, height } = attrs;
     const data = typeof src === "string" ? decodeDataUrl(src) : null;
     if (!data) return null;
     const size =
@@ -856,6 +863,51 @@ function hfParagraphs(paragraphs: HFParagraph[]): Paragraph[] {
     );
 }
 
+function hfBlocks(blocks: HFBlock[]): (Paragraph | Table)[] {
+  const out: (Paragraph | Table)[] = [];
+  for (const block of blocks ?? []) {
+    if (isHFTable(block)) {
+      const side = block.insideBorder;
+      const dotted =
+        side
+          ? {
+              insideHorizontal: {
+                style: BorderStyle.DOTTED,
+                size: Math.max(2, Math.round((side.widthPt ?? 0.25) * 8)),
+                color: (side.color ?? "#000000").replace("#", "").toUpperCase(),
+              },
+              insideVertical: {
+                style: BorderStyle.DOTTED,
+                size: Math.max(2, Math.round((side.widthPt ?? 0.25) * 8)),
+                color: (side.color ?? "#000000").replace("#", "").toUpperCase(),
+              },
+            }
+          : undefined;
+      out.push(
+        new Table({
+          width:
+            block.widthPx && block.widthPx > 0
+              ? { size: twips(block.widthPx), type: WidthType.DXA }
+              : undefined,
+          borders: dotted,
+          rows: [
+            new TableRow({
+              children: [
+                new TableCell({
+                  children: hfParagraphs(block.paragraphs),
+                }),
+              ],
+            }),
+          ],
+        }),
+      );
+      continue;
+    }
+    out.push(...hfParagraphs([block]));
+  }
+  return out;
+}
+
 function headerFooterOptions(section: SectionLayout | null) {
   if (!section) {
     return {
@@ -876,9 +928,9 @@ function headerFooterOptions(section: SectionLayout | null) {
   const footers: { default?: Footer; first?: Footer; even?: Footer } = {};
   for (const key of ["default", "first", "even"] as const) {
     const h = section.headers?.[key];
-    if (h) headers[key] = new Header({ children: hfParagraphs(h) });
+    if (h) headers[key] = new Header({ children: hfBlocks(h) as Paragraph[] });
     const f = section.footers?.[key];
-    if (f) footers[key] = new Footer({ children: hfParagraphs(f) });
+    if (f) footers[key] = new Footer({ children: hfBlocks(f) as Paragraph[] });
   }
   return { headers, footers };
 }
@@ -1031,5 +1083,7 @@ export async function exportDocx(
     })),
   });
 
-  return Packer.toArrayBuffer(doc);
+  const packed = await Packer.toArrayBuffer(doc);
+  const { patchVmlSignatures } = await import("./vmlExport");
+  return patchVmlSignatures(packed, json);
 }

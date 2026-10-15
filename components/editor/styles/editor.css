@@ -409,7 +409,14 @@
   overflow: visible;
   margin: 0;
   padding: 0;
-  vertical-align: baseline;
+  /* Anchor at the text baseline of the signature line (image is first inline). */
+  vertical-align: text-bottom;
+  position: relative;
+}
+
+.transcript-editor-root .ProseMirror :is(p, [data-pm-format]):has(.pm-image-anchored) {
+  overflow: visible;
+  position: relative;
 }
 
 /* —— Word formatting (imported DOCX) ——
@@ -446,6 +453,11 @@
 
 .transcript-editor-root .paper--word .pm-table :is(td, th)[data-valign="middle"] {
   vertical-align: middle;
+}
+
+/* Word cell padding comes from `w:tblCellMar` / `w:tcMar` (data-cell-margin), not a fixed 7px. */
+.transcript-editor-root .paper--word .pm-table :is(td, th) {
+  padding: 0;
 }
 
 .transcript-editor-root .paper--word .pm-table :is(td, th) .pm-image-wrap {

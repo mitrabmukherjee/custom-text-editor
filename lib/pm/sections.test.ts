@@ -42,7 +42,8 @@ describe("sections", () => {
     expect(tr).toBeTruthy();
     const next = state.apply(tr!);
     const sections = sectionsOf(next);
-    const runs = sections[0].footers?.default?.[0].runs ?? [];
+    const paras = sections[0].footers?.default?.[0];
+    const runs = paras && paras.kind !== "table" ? paras.runs : [];
     expect(runs.some((r) => r.kind === "field" && r.field === "PAGE")).toBe(true);
   });
 });

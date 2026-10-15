@@ -1,6 +1,8 @@
 import type { Node as PMNode } from "prosemirror-model";
 import { Plugin } from "prosemirror-state";
 import type { EditorView, NodeView } from "prosemirror-view";
+import { parseVmlAnchorAttr } from "@/lib/docx/vmlAnchor";
+import { PT_TO_PX } from "../format";
 import { fitImage, readImageFile, setImageSize } from "../objects";
 import { safeHref, schema } from "../schema";
 import { SKIP_TRACKING } from "../track-changes";
@@ -36,13 +38,32 @@ class ImageView implements NodeView {
     if (title) this.img.title = title;
     this.img.style.width = width ? `${width}px` : "";
     this.img.style.height = height ? `${height}px` : "";
-    const anchored = anchorX != null || anchorY != null;
+    const vml = parseVmlAnchorAttr(this.node.attrs.vmlAnchor);
+    const anchored = anchorX != null || anchorY != null || vml != null;
     this.dom.classList.toggle("pm-image-anchored", anchored);
     if (anchored) {
-      this.dom.style.cssText = "";
+      this.dom.style.cssText = "position:relative";
       this.img.style.position = "absolute";
-      this.img.style.left = anchorX != null ? `${anchorX}px` : "0";
-      this.img.style.top = anchorY != null ? `${anchorY}px` : "0";
+      this.img.style.zIndex = "2";
+      const left =
+        anchorX != null
+          ? anchorX
+          : vml != null
+            ? Math.round(vml.marginLeftPt * PT_TO_PX)
+            : 0;
+      const top =
+        vml?.placement === "underlineParagraph" && anchorY != null
+          ? anchorY
+          : vml != null
+            ? Math.round(vml.marginTopPt * PT_TO_PX) - (typeof height === "number" ? height : 0)
+            : anchorY ?? 0;
+      this.img.style.left = `${left}px`;
+      this.img.style.top = `${top}px`;
+      const block = this.dom.parentElement;
+      if (block && (block.tagName === "P" || block.hasAttribute("data-pm-format"))) {
+        block.style.overflow = "visible";
+        block.style.position = "relative";
+      }
     } else {
       this.dom.style.cssText = "";
       this.img.style.position = "";

@@ -6,6 +6,9 @@ import {
   runStyle,
   type DocumentLayout,
   type HFFrame,
+  hfSetParagraphs,
+  isHFTable,
+  type HFBlock,
   type HFParagraph,
   type HFRun,
   type LineNumbering,
@@ -129,22 +132,21 @@ function HFLine({
 }
 
 function HeaderFooter({
-  paragraphs,
+  blocks,
   page,
   pageCount,
   style,
   editable,
   onEdit,
 }: {
-  paragraphs: HFParagraph[] | undefined;
+  blocks: HFBlock[] | undefined;
   page: number;
   pageCount: number;
   style: CSSProperties;
   editable?: boolean;
   onEdit?: () => void;
 }) {
-  const flow = paragraphs?.filter((p) => !p.floating) ?? [];
-  if (!flow.length && !editable) return null;
+  if (!blocks?.length && !editable) return null;
   return (
     <div
       className={`studio-hf${editable ? " studio-hf--editable" : ""}`}
@@ -152,9 +154,42 @@ function HeaderFooter({
       onDoubleClick={editable ? onEdit : undefined}
       title={editable ? "Double-click to edit" : undefined}
     >
-      {flow.map((p, i) => (
-        <HFLine key={i} paragraph={p} page={page} pageCount={pageCount} />
-      ))}
+      {(blocks ?? []).map((block, i) => {
+        if (isHFTable(block)) {
+          const boxStyle = block.insideBorder
+            ? paragraphStyle({
+                boxBorder: {
+                  top: block.insideBorder,
+                  right: block.insideBorder,
+                  bottom: block.insideBorder,
+                  left: block.insideBorder,
+                },
+              })
+            : {};
+          const tableStyle: CSSProperties = {
+            width: block.widthPx ? `${block.widthPx}px` : "100%",
+            borderCollapse: "collapse",
+            margin: "0 auto",
+            ...boxStyle,
+          };
+          const flow = block.paragraphs.filter((p) => !p.floating);
+          return (
+            <table key={i} className="studio-hf-table" style={tableStyle}>
+              <tbody>
+                <tr>
+                  <td style={{ padding: 0, border: "none" }}>
+                    {flow.map((p, j) => (
+                      <HFLine key={j} paragraph={p} page={page} pageCount={pageCount} />
+                    ))}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          );
+        }
+        if (block.floating) return null;
+        return <HFLine key={i} paragraph={block} page={page} pageCount={pageCount} />;
+      })}
     </div>
   );
 }
@@ -202,19 +237,19 @@ function frameStyle(
 
 /** Header/footer paragraphs in Word frames, positioned on the page and taking no space. */
 function Frames({
-  paragraphs,
+  blocks,
   setup,
   textTop,
   page,
   pageCount,
 }: {
-  paragraphs: HFParagraph[] | undefined;
+  blocks: HFBlock[] | undefined;
   setup: PageSetup;
   textTop: number;
   page: number;
   pageCount: number;
 }) {
-  const framed = paragraphs?.filter((p) => p.frame) ?? [];
+  const framed = hfSetParagraphs(blocks).filter((p) => p.frame) ?? [];
   return (
     <>
       {framed.map((p, i) => (
@@ -513,7 +548,7 @@ export function StudioPageBackgrounds({
           {layout ? (
             <>
               <HeaderFooter
-                paragraphs={header}
+                blocks={header}
                 page={info.number}
                 pageCount={pageCount}
                 style={{ top: section.headerDistance ?? 48, left: setup.marginLeft, width: textWidth }}
@@ -521,7 +556,7 @@ export function StudioPageBackgrounds({
                 onEdit={() => onHeaderFooterEdit?.(info, "header")}
               />
               <HeaderFooter
-                paragraphs={footer}
+                blocks={footer}
                 page={info.number}
                 pageCount={pageCount}
                 style={{ bottom: section.footerDistance ?? 48, left: setup.marginLeft, width: textWidth }}
@@ -529,14 +564,14 @@ export function StudioPageBackgrounds({
                 onEdit={() => onHeaderFooterEdit?.(info, "footer")}
               />
               <Frames
-                paragraphs={header}
+                blocks={header}
                 setup={setup}
                 textTop={section.headerDistance ?? 48}
                 page={info.number}
                 pageCount={pageCount}
               />
               <Frames
-                paragraphs={footer}
+                blocks={footer}
                 setup={setup}
                 textTop={setup.height - (section.footerDistance ?? 48) - headerFooterHeight(footer)}
                 page={info.number}

@@ -50,8 +50,9 @@ class FramedParagraphView implements NodeView {
     return true;
   }
 
-  ignoreMutation(record: MutationRecord) {
-    return !this.contentDOM.contains(record.target as Node);
+  ignoreMutation(record: { type: string; target: Node }) {
+    if (record.type === "selection") return false;
+    return !this.contentDOM.contains(record.target);
   }
 }
 

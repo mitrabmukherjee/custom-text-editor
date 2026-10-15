@@ -34,6 +34,8 @@ export type RunFormat = {
   highlight?: string | null;
   caps?: CapsStyle | null;
   vertAlign?: VertAlign | null;
+  /** Word `w:kern` — enable font kerning for this run. */
+  fontKern?: boolean | null;
 };
 
 export const PLAIN_RUN: Required<RunFormat> = {
@@ -47,6 +49,7 @@ export const PLAIN_RUN: Required<RunFormat> = {
   highlight: null,
   caps: null,
   vertAlign: null,
+  fontKern: null,
 };
 
 /** Marks whose changes are tracked as formatting revisions. */
@@ -83,6 +86,7 @@ export function runFormatOf(marks: readonly Mark[]): RunFormat {
     highlight: (find("highlight")?.attrs.color as string | undefined) ?? null,
     caps: (find("caps")?.attrs.style as CapsStyle | undefined) ?? null,
     vertAlign: (find("vertAlign")?.attrs.align as VertAlign | undefined) ?? null,
+    fontKern: (style?.attrs.fontKern as boolean | undefined) ? true : null,
   };
 }
 
@@ -90,8 +94,11 @@ export function runFormatOf(marks: readonly Mark[]): RunFormat {
 export function runFormatMarks(format: RunFormat): MarkJSON[] {
   const f = fullRunFormat(format);
   const marks: MarkJSON[] = [];
-  if (f.fontFamily || f.fontSize) {
-    marks.push({ type: "textStyle", attrs: { fontFamily: f.fontFamily, fontSize: f.fontSize } });
+  if (f.fontFamily || f.fontSize || f.fontKern) {
+    marks.push({
+      type: "textStyle",
+      attrs: { fontFamily: f.fontFamily, fontSize: f.fontSize, fontKern: f.fontKern || null },
+    });
   }
   if (f.bold) marks.push({ type: "strong" });
   if (f.italic) marks.push({ type: "em" });

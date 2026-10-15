@@ -420,6 +420,7 @@ const MAX_TAB_ROUNDS = 4;
 
 class PaginationView {
   private frame = 0;
+  private resizeDebounce = 0;
   private lastSignature = "";
   private tabRounds = 0;
   private lastDocSize = 0;
@@ -429,7 +430,13 @@ class PaginationView {
     private readonly view: EditorView,
     private readonly config: PaginationConfig,
   ) {
-    this.resizeObserver = new ResizeObserver(() => this.schedule());
+    this.resizeObserver = new ResizeObserver(() => {
+      if (this.resizeDebounce) window.clearTimeout(this.resizeDebounce);
+      this.resizeDebounce = window.setTimeout(() => {
+        this.resizeDebounce = 0;
+        this.schedule();
+      }, 32);
+    });
     this.resizeObserver.observe(view.dom);
     void document.fonts?.ready.then(() => this.schedule());
     this.schedule();
@@ -446,6 +453,7 @@ class PaginationView {
 
   destroy() {
     cancelAnimationFrame(this.frame);
+    if (this.resizeDebounce) window.clearTimeout(this.resizeDebounce);
     this.resizeObserver.disconnect();
   }
 
@@ -575,6 +583,12 @@ class PaginationView {
           const el = view.nodeDOM(rowPos) as HTMLElement | null;
           if (!el) return;
           const r = el.getBoundingClientRect();
+          let keepNext = false;
+          row.descendants((cell) => {
+            if (!cell.isTextblock) return;
+            const f = cell.attrs.format as ParagraphFormat | null;
+            if (f?.keepNext) keepNext = true;
+          });
           lines.push({
             top: natural(r.top),
             bottom: natural(r.bottom),
@@ -582,6 +596,7 @@ class PaginationView {
             section,
             ref: { kind: "block", pos: index === 0 ? pos : rowPos },
             numbered: false,
+            keepNext,
           });
         });
         return false;

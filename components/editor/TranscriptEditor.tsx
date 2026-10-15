@@ -74,14 +74,23 @@ async function loadDocxModule() {
   return import("@/lib/docx");
 }
 
-/** 0-based page holding the cursor, from its position in the page stack. */
-function pageOfSelection(c: EditorController) {
+/** 0-based page index from a Y coordinate in the editor viewport (client pixels). */
+function pageAtClientY(c: EditorController, clientY: number) {
   const dom = c.view.dom as HTMLElement;
   try {
     const rect = dom.getBoundingClientRect();
     const scale = dom.offsetHeight ? rect.height / dom.offsetHeight : 1;
-    const y = (c.view.coordsAtPos(c.state.selection.head).top - rect.top) / scale;
+    const y = (clientY - rect.top) / scale;
     return Math.max(0, Math.floor(y / pageStride(c.getPageSetup())));
+  } catch {
+    return 0;
+  }
+}
+
+/** 0-based page holding the cursor, from its position in the page stack. */
+function pageOfSelection(c: EditorController) {
+  try {
+    return pageAtClientY(c, c.view.coordsAtPos(c.state.selection.head).top);
   } catch {
     return 0;
   }
@@ -229,6 +238,17 @@ export function TranscriptEditor(props: TranscriptEditorProps) {
 
   useEffect(() => {
     const el = scrollRef.current;
+    if (!el || !controller) return;
+    const onScroll = () => {
+      const mid = el.getBoundingClientRect().top + el.clientHeight * 0.35;
+      setCursorPage(pageAtClientY(controller, mid));
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [controller]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
       if (!e.ctrlKey || !e.deltaY) return;
@@ -308,6 +328,7 @@ export function TranscriptEditor(props: TranscriptEditorProps) {
         if (!controller) throw new Error("Editor not ready");
         const { importDocx } = await loadDocxModule();
         const result = await importDocx(buffer);
+        if (result.pageSetup) controller.setPageSetup(result.pageSetup);
         controller.load(result.doc);
       },
       exportDocx: async () => {

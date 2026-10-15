@@ -132,12 +132,35 @@ export type HFParagraph = {
   frame?: HFFrame;
 };
 
+/** Header/footer content block (paragraph or single-cell table with inside borders). */
+export type HFBlock =
+  | ({ kind?: "paragraph" } & HFParagraph)
+  | {
+      kind: "table";
+      widthPx?: number;
+      insideBorder?: ParagraphBorderSide;
+      paragraphs: HFParagraph[];
+    };
+
 export type HeaderFooterSet = {
-  default?: HFParagraph[];
-  first?: HFParagraph[];
+  default?: HFBlock[];
+  first?: HFBlock[];
   /** Even pages when `DocumentLayout.evenAndOddHeaders` is on. */
-  even?: HFParagraph[];
+  even?: HFBlock[];
 };
+
+export function isHFTable(block: HFBlock): block is Extract<HFBlock, { kind: "table" }> {
+  return block.kind === "table";
+}
+
+export function hfBlockParagraphs(block: HFBlock): HFParagraph[] {
+  if (isHFTable(block)) return block.paragraphs;
+  return [block];
+}
+
+export function hfSetParagraphs(set: HFBlock[] | undefined): HFParagraph[] {
+  return (set ?? []).flatMap(hfBlockParagraphs);
+}
 
 export type LineNumbering = {
   countBy: number;
@@ -166,6 +189,8 @@ export type SectionLayout = {
   pageNumberStart?: number;
   /** Text columns (`w:cols`); 1 when absent. */
   columns?: { count: number; space: number };
+  /** `w:docGrid w:linePitch` (twips), when present. */
+  docGridLinePitch?: number;
 };
 
 /** A paragraph or character style from `styles.xml`, flattened along `basedOn`. */
@@ -337,6 +362,7 @@ export function paragraphStyle(format: ParagraphFormat | null | undefined): CssD
 export function runStyle(run: {
   fontFamily?: string | null;
   fontSize?: number | null;
+  fontKern?: boolean | null;
 }): CssDeclarations {
   const css: CssDeclarations = {};
   if (run.fontFamily) css.fontFamily = fontStack(run.fontFamily);
@@ -354,8 +380,14 @@ export function paragraphCss(format: ParagraphFormat | null | undefined): string
   return toCssText(paragraphStyle(format));
 }
 
-export function runCss(run: { fontFamily?: string | null; fontSize?: number | null }): string {
-  return toCssText(runStyle(run));
+export function runCss(run: {
+  fontFamily?: string | null;
+  fontSize?: number | null;
+  fontKern?: boolean | null;
+}): string {
+  const base = toCssText(runStyle(run));
+  if (!run.fontKern) return base;
+  return base ? `${base}; font-kerning: auto` : "font-kerning: auto";
 }
 
 /** Height in px of one line of a header/footer paragraph (assumes it does not wrap). */
@@ -374,8 +406,8 @@ function hfParagraphHeight(p: HFParagraph): number {
   return line + (p.format.spaceBefore ?? 0) + (p.format.spaceAfter ?? 0);
 }
 
-export function headerFooterHeight(paragraphs: HFParagraph[] | undefined): number {
-  return (paragraphs ?? []).reduce((sum, p) => sum + hfParagraphHeight(p), 0);
+export function headerFooterHeight(blocks: HFBlock[] | undefined): number {
+  return hfSetParagraphs(blocks).reduce((sum, p) => sum + hfParagraphHeight(p), 0);
 }
 
 /** Which header/footer of a section applies to a page. */
@@ -384,7 +416,7 @@ export function headerFooterFor(
   section: SectionLayout | null | undefined,
   page: Pick<PageInfo, "first" | "number">,
   evenAndOdd = false,
-): HFParagraph[] | undefined {
+): HFBlock[] | undefined {
   if (!set) return undefined;
   if (page.first && section?.titlePage) return set.first;
   if (evenAndOdd && page.number % 2 === 0) return set.even;

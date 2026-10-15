@@ -1,9 +1,11 @@
 import { DOMParser } from "@xmldom/xmldom";
 import JSZip from "jszip";
+import type { VmlAnchorJSON } from "./vmlAnchor";
 import {
   PT_TO_PX,
   type DocumentLayout,
   type HFFrame,
+  type HFBlock,
   type HFParagraph,
   type HFRun,
   type HeaderFooterSet,
@@ -19,6 +21,7 @@ import {
   type TextAlign,
   type CellBorderEdges,
   type CellMarginPx,
+  paragraphLineHeightPx,
 } from "@/lib/pm/format";
 import type { CommentReply, CommentThread } from "@/lib/pm/comments";
 import type { DocJSON, MarkJSON, NodeJSON } from "@/lib/pm/json";
@@ -164,6 +167,8 @@ type RawRun = {
   caps?: boolean;
   smallCaps?: boolean;
   vertAlign?: string;
+  /** Present when `w:kern` is set on the run. */
+  kern?: boolean;
 };
 
 type StyleDef = {
@@ -296,26 +301,37 @@ function parsePPr(pPr: XElement | undefined): RawPara {
   });
 }
 
-function parseRPr(rPr: XElement | undefined, theme: ThemeFonts): RawRun {
-  if (!rPr) return {};
-  const fonts = child(rPr, "rFonts");
+/** Latin run font from `w:rFonts` (matches Word for court transcripts / Form 3). */
+function resolveRunFont(fonts: XElement | undefined, theme: ThemeFonts): string | undefined {
+  if (!fonts) return undefined;
   const themeName = attr(fonts, "asciiTheme") ?? attr(fonts, "hAnsiTheme");
   const themeFont = themeName
     ? themeName.startsWith("major")
       ? theme.major
       : theme.minor
     : undefined;
+  const ascii = attr(fonts, "ascii");
+  const hAnsi = attr(fonts, "hAnsi");
+  const eastAsia = attr(fonts, "eastAsia");
+  const cs = attr(fonts, "cs");
+  if (ascii) return ascii;
+  if (hAnsi) return hAnsi;
+  if (themeFont) return themeFont;
+  if (cs && !eastAsia) return cs;
+  if (eastAsia && !cs) return eastAsia;
+  if (cs && eastAsia) return cs;
+  return cs ?? eastAsia ?? undefined;
+}
+
+function parseRPr(rPr: XElement | undefined, theme: ThemeFonts): RawRun {
+  if (!rPr) return {};
+  const fonts = child(rPr, "rFonts");
   const sz = num(child(rPr, "sz"), "val");
   const color = attr(child(rPr, "color"), "val");
   const highlight = attr(child(rPr, "highlight"), "val");
   const fill = attr(child(rPr, "shd"), "fill");
   return defined({
-    font:
-      attr(fonts, "ascii") ??
-      attr(fonts, "hAnsi") ??
-      attr(fonts, "cs") ??
-      themeFont ??
-      undefined,
+    font: resolveRunFont(fonts, theme),
     size: sz,
     bold: toggle(child(rPr, "b")),
     italic: toggle(child(rPr, "i")),
@@ -333,6 +349,7 @@ function parseRPr(rPr: XElement | undefined, theme: ThemeFonts): RawRun {
     caps: toggle(child(rPr, "caps")),
     smallCaps: toggle(child(rPr, "smallCaps")),
     vertAlign: attr(child(rPr, "vertAlign"), "val") ?? undefined,
+    kern: child(rPr, "kern") ? true : undefined,
   });
 }
 
@@ -723,7 +740,16 @@ type Context = {
   /** Open complex fields, innermost last. */
   fields: { instr: string; result: boolean; link: LinkTarget | null }[];
   /** Absolute VML signature from a pict-only paragraph, placed on the next underline line. */
-  pendingVmlSignature: { image: ImageJSON; frame: HFFrame } | null;
+  pendingVmlSignature: {
+    image: ImageJSON;
+    frame: HFFrame;
+    carrierIndentLeft?: number;
+    vmlPt: { marginLeftPt: number; marginTopPt: number; widthPt: number; heightPt: number };
+  } | null;
+  /** Body paragraphs emitted since the VML carrier was consumed (date line, etc.). */
+  pendingVmlParasSinceCarrier: number;
+  /** Sum of line heights for paragraphs between carrier and underline target. */
+  pendingVmlOffsetPx: number;
 };
 
 // —— Comments ——
@@ -917,6 +943,7 @@ function runFormat(run: RawRun, b: ParagraphBuilder): RunFormat {
     highlight: highlight ?? shading,
     caps: run.caps ? "all" : run.smallCaps ? "small" : null,
     vertAlign: vert === "superscript" || vert === "subscript" ? vert : null,
+    fontKern: run.kern ? true : null,
   };
 }
 
@@ -1061,6 +1088,7 @@ type ImageJSON = {
   height: number | null;
   anchorX?: number | null;
   anchorY?: number | null;
+  vmlAnchor?: VmlAnchorJSON | null;
 };
 
 /** `w:drawing` (inline or anchored picture), shown inline. */
@@ -1088,12 +1116,27 @@ function vmlPtToPx(pt: number) {
 }
 
 /** `v:shape` style on legacy `w:pict` (absolute signature images on Form 3). */
+function vmlStylePt(style: string) {
+  const read = (prop: string) => {
+    const m = new RegExp(`${prop}:\\s*([\\d.]+)pt`, "i").exec(style);
+    return m ? Number(m[1]) : 0;
+  };
+  return {
+    marginLeftPt: read("margin-left"),
+    marginTopPt: read("margin-top"),
+    widthPt: read("width"),
+    heightPt: read("height"),
+  };
+}
+
 function parseVmlShapeStyle(style: string): {
   frame?: HFFrame;
   width?: number;
   height?: number;
+  vmlPt?: ReturnType<typeof vmlStylePt>;
 } {
   if (!/position\s*:\s*absolute/i.test(style)) return {};
+  const vmlPt = vmlStylePt(style);
   const pt = (prop: string) => {
     const m = new RegExp(`${prop}:\\s*([\\d.]+)pt`, "i").exec(style);
     return m ? vmlPtToPx(Number(m[1])) : undefined;
@@ -1105,6 +1148,7 @@ function parseVmlShapeStyle(style: string): {
   return {
     width,
     height,
+    vmlPt,
     frame: {
       hAnchor: "text",
       vAnchor: "text",
@@ -1151,18 +1195,43 @@ function consumeVmlSignatureCarrier(p: XElement, ctx: Context): boolean {
   if (!isVmlSignatureCarrier(p)) return false;
   const pict = findVmlPict(p)!;
   const image = vmlImage(pict, ctx);
-  const frame = parseVmlShapeStyle(firstNS(pict, VML_NS, "shape")?.getAttribute("style") ?? "").frame;
-  if (!image || !frame) return false;
-  ctx.pendingVmlSignature = { image, frame };
+  const shaped = parseVmlShapeStyle(firstNS(pict, VML_NS, "shape")?.getAttribute("style") ?? "");
+  const frame = shaped.frame;
+  if (!image || !frame || !shaped.vmlPt) return false;
+  const pPr = child(p, "pPr");
+  const ind = child(pPr, "ind");
+  const carrierIndentLeft = ind ? Math.round((num(ind, "left") ?? 0) / TWIPS_PER_PX) : undefined;
+  ctx.pendingVmlSignature = { image, frame, carrierIndentLeft, vmlPt: shaped.vmlPt };
+  ctx.pendingVmlParasSinceCarrier = 0;
+  ctx.pendingVmlOffsetPx = 0;
   return true;
 }
 
-function anchoredVmlImageAttrs(image: ImageJSON, frame: HFFrame): ImageJSON {
-  const h = image.height ?? frame.height ?? 48;
+function anchoredVmlImageAttrs(
+  image: ImageJSON,
+  frame: HFFrame,
+  vmlPt: { marginLeftPt: number; marginTopPt: number; widthPt: number; heightPt: number },
+  carrierIndentLeft: number | undefined,
+  parasSinceCarrier: number,
+  offsetPx: number,
+): ImageJSON {
+  const vmlAnchor: VmlAnchorJSON = {
+    placement: "underlineParagraph",
+    marginLeftPt: vmlPt.marginLeftPt,
+    marginTopPt: vmlPt.marginTopPt,
+    widthPt: vmlPt.widthPt || (image.width ?? 0) / PT_TO_PX,
+    heightPt: vmlPt.heightPt || (image.height ?? 0) / PT_TO_PX,
+    carrierIndentLeftPx: carrierIndentLeft,
+    paragraphsBetween: parasSinceCarrier,
+  };
+  const leftPx = Math.round(vmlPt.marginLeftPt * PT_TO_PX);
+  const marginTopPx = Math.round(vmlPt.marginTopPt * PT_TO_PX);
   return {
     ...image,
-    anchorX: frame.x ?? 0,
-    anchorY: -(h ?? 48) + 4,
+    anchorX: leftPx,
+    /** VML margin-top is relative to the carrier; shift down by intervening body lines. */
+    anchorY: marginTopPx - offsetPx,
+    vmlAnchor,
   };
 }
 
@@ -1321,10 +1390,33 @@ function walkParagraph(p: XElement, blocks: Block[], ctx: Context) {
   if (attachVmlSignature) {
     const pending = ctx.pendingVmlSignature!;
     ctx.pendingVmlSignature = null;
-    builder.inlineNode("image", [], anchoredVmlImageAttrs(pending.image, pending.frame));
+    const parasSince = ctx.pendingVmlParasSinceCarrier;
+    const offsetPx = ctx.pendingVmlOffsetPx;
+    ctx.pendingVmlParasSinceCarrier = 0;
+    ctx.pendingVmlOffsetPx = 0;
+    builder.inlineNode(
+      "image",
+      [],
+      anchoredVmlImageAttrs(
+        pending.image,
+        pending.frame,
+        pending.vmlPt,
+        pending.carrierIndentLeft,
+        parasSince,
+        offsetPx,
+      ),
+    );
   }
   walkInline(p, builder, null, ctx);
   builder.end();
+
+  if (ctx.pendingVmlSignature && !attachVmlSignature) {
+    ctx.pendingVmlParasSinceCarrier += 1;
+    const lh =
+      paragraphLineHeightPx(paragraphFormat) ??
+      Math.round((paragraphFormat.fontSize ?? 12) * PT_TO_PX * 1.15 * (paragraphFormat.lineValue ?? 1));
+    ctx.pendingVmlOffsetPx += lh;
+  }
 
   const sectPr = child(pPr, "sectPr");
   if (sectPr) {
@@ -1579,19 +1671,22 @@ function fieldName(instr: string): "PAGE" | "NUMPAGES" | null {
   return null;
 }
 
-function parseHeaderFooter(xml: string, ctx: Context): HFParagraph[] {
-  const root = parseXml(xml);
-  const out: HFParagraph[] = [];
-  const paragraphs: XElement[] = [];
-  const collect = (el: XElement) => {
-    for (const c of elements(el)) {
-      if (c.localName === "p") paragraphs.push(c);
-      else if (["tbl", "tr", "tc", "sdt", "sdtContent"].includes(c.localName ?? "")) collect(c);
-    }
-  };
-  collect(root);
+/** Header/footer tables often use `insideH`/`insideV` as a box around the cell. */
+function tableInsideBorderBox(tblPr: XElement | undefined): ParagraphFormat["boxBorder"] | undefined {
+  const borders = child(tblPr, "tblBorders");
+  if (!borders) return undefined;
+  const insideH = parseBorderSide(child(borders, "insideH"));
+  const insideV = parseBorderSide(child(borders, "insideV"));
+  const side = insideH ?? insideV;
+  if (!side) return undefined;
+  return { top: side, right: side, bottom: side, left: side };
+}
 
-  for (const p of paragraphs) {
+function parseHeaderFooterParagraph(
+  p: XElement,
+  ctx: Context,
+  hfBoxBorder?: ParagraphFormat["boxBorder"],
+): HFParagraph {
     const pPr = child(p, "pPr");
     const { styleId, format } = resolveParagraph(pPr, ctx);
     const runs: HFRun[] = [];
@@ -1659,9 +1754,41 @@ function parseHeaderFooter(xml: string, ctx: Context): HFParagraph[] {
     };
     walk(p);
     const frame = parseFrame(child(pPr, "framePr"));
-    out.push(frame ? { format, runs, floating: true, frame } : { format, runs });
+    const mergedFormat = hfBoxBorder ? { ...format, boxBorder: hfBoxBorder } : format;
+    return frame ? { format: mergedFormat, runs, floating: true, frame } : { format: mergedFormat, runs };
+}
+
+function parseHeaderFooter(xml: string, ctx: Context): HFBlock[] {
+  const root = parseXml(xml);
+  const rootTbl = elements(root).find((c) => c.localName === "tbl");
+  const paragraphs: XElement[] = [];
+  const collect = (el: XElement) => {
+    for (const c of elements(el)) {
+      if (c.localName === "p") paragraphs.push(c);
+      else if (["tbl", "tr", "tc", "sdt", "sdtContent"].includes(c.localName ?? "")) collect(c);
+    }
+  };
+  collect(root);
+
+  const parsed = paragraphs.map((p) => parseHeaderFooterParagraph(p, ctx));
+
+  if (rootTbl) {
+    const tblPr = child(rootTbl, "tblPr");
+    const insideH = parseBorderSide(child(child(tblPr, "tblBorders"), "insideH"));
+    const tblW = child(tblPr, "tblW");
+    const w = num(tblW, "w");
+    const widthPx = w ? Math.round(w / TWIPS_PER_PX) : undefined;
+    return [
+      {
+        kind: "table",
+        widthPx,
+        insideBorder: insideH,
+        paragraphs: parsed,
+      },
+    ];
   }
-  return out;
+
+  return parsed;
 }
 
 const ANCHORS: Record<string, HFFrame["hAnchor"]> = { page: "page", margin: "margin", text: "text" };
@@ -1787,6 +1914,7 @@ async function parseSection(
     pageNumberStart: num(child(sectPr, "pgNumType"), "start"),
     columns:
       colCount > 1 ? { count: colCount, space: twipsPx(num(cols, "space")) ?? 48 } : undefined,
+    docGridLinePitch: num(child(sectPr, "docGrid"), "linePitch"),
   }) as SectionLayout;
   return {
     start: sectPrStartType(sectPr, previous),
@@ -1886,6 +2014,8 @@ export async function importDocx(
     link: null,
     fields: [],
     pendingVmlSignature: null,
+    pendingVmlParasSinceCarrier: 0,
+    pendingVmlOffsetPx: 0,
   };
 
   const root = parseXml(documentXml);

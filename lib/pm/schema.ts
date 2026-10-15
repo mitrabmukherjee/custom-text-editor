@@ -510,6 +510,8 @@ const baseNodes: Record<string, NodeSpec> = {
       /** VML absolute placement within the paragraph line (px). */
       anchorX: { default: null },
       anchorY: { default: null },
+      /** Round-trip VML signature metadata (`VmlAnchorJSON`). */
+      vmlAnchor: { default: null },
     },
     parseDOM: [
       {
@@ -522,11 +524,20 @@ const baseNodes: Record<string, NodeSpec> = {
           height: Number(dom.getAttribute("height")) || null,
           anchorX: Number(dom.getAttribute("data-anchor-x")) || null,
           anchorY: Number(dom.getAttribute("data-anchor-y")) || null,
+          vmlAnchor: (() => {
+            const raw = dom.getAttribute("data-vml-anchor");
+            if (!raw) return null;
+            try {
+              return JSON.parse(raw);
+            } catch {
+              return null;
+            }
+          })(),
         }),
       },
     ],
     toDOM: (node) => {
-      const { src, alt, title, width, height, anchorX, anchorY } = node.attrs;
+      const { src, alt, title, width, height, anchorX, anchorY, vmlAnchor } = node.attrs;
       const img: Record<string, string | number | null> = {
         class: "pm-image",
         src,
@@ -537,6 +548,7 @@ const baseNodes: Record<string, NodeSpec> = {
       };
       if (anchorX != null) img["data-anchor-x"] = anchorX;
       if (anchorY != null) img["data-anchor-y"] = anchorY;
+      if (vmlAnchor) img["data-vml-anchor"] = JSON.stringify(vmlAnchor);
       return ["img", img];
     },
   },
@@ -639,13 +651,18 @@ const marks: Record<string, MarkSpec> = {
     ],
   },
   textStyle: {
-    attrs: { fontFamily: { default: null }, fontSize: { default: null } },
+    attrs: {
+      fontFamily: { default: null },
+      fontSize: { default: null },
+      fontKern: { default: null },
+    },
     parseDOM: [
       {
         tag: "span[data-text-style]",
         getAttrs: (dom) => ({
           fontFamily: dom.getAttribute("data-font-family") || null,
           fontSize: Number(dom.getAttribute("data-font-size")) || null,
+          fontKern: dom.getAttribute("data-font-kern") === "1" ? true : null,
         }),
       },
     ],
@@ -655,6 +672,7 @@ const marks: Record<string, MarkSpec> = {
         "data-text-style": "",
         "data-font-family": mark.attrs.fontFamily ?? "",
         "data-font-size": mark.attrs.fontSize ?? "",
+        "data-font-kern": mark.attrs.fontKern ? "1" : "",
         style: runCss(mark.attrs),
       },
       0,

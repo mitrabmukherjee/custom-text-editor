@@ -4,17 +4,28 @@ import { join } from "node:path";
 import JSZip from "jszip";
 import { describe, expect, it } from "vitest";
 import { collectComments, type CommentThread } from "@/lib/pm/comments";
+import { EditorState } from "prosemirror-state";
 import { PT_TO_PX, type DocumentLayout, type ParagraphFormat } from "@/lib/pm/format";
+import { sectionsOf } from "@/lib/pm/sections";
 import type { DocJSON, NodeJSON } from "@/lib/pm/json";
 import { LETTER_PAGE_SETUP } from "@/lib/pm/pagination/pageSetup";
 import { collectChanges } from "@/lib/pm/track-changes/changes";
 import { schema } from "@/lib/pm/schema";
 import { docJsonToPlainText } from "@/lib/serializers/plainText";
+import { parseVmlAnchorAttr } from "./vmlAnchor";
 import { exportDocx, importDocx } from "./index";
+import { hfSetParagraphs, isHFTable, type HFParagraph } from "@/lib/pm/format";
 
 const DATE = "2026-10-13T09:30:00.000Z";
 const PNG_1PX =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+function sectionPageNumberStarts(doc: DocJSON): number[] {
+  const state = EditorState.create({ doc: schema.nodeFromJSON(doc) });
+  return sectionsOf(state)
+    .map((s) => s.pageNumberStart)
+    .filter((n): n is number => n !== undefined);
+}
 
 function change(type: "insertion" | "deletion", id: string, name: string) {
   return { type, attrs: { id, authorId: name, authorName: name, date: DATE } };
@@ -386,7 +397,9 @@ describe("importDocx", () => {
     expect(section.page.marginTop).toBe(144);
     expect(section.titlePage).toBe(true);
     expect(section.headers.first).toEqual([]);
-    expect(section.headers.default[0].runs).toEqual([{ kind: "text", text: "Cover header" }]);
+    expect((section.headers.default[0] as HFParagraph).runs).toEqual([
+      { kind: "text", text: "Cover header" },
+    ]);
 
     const body = node.child(2);
     expect(body.attrs.format).toMatchObject({ align: "center", contextualSpacing: true, pageBreakBefore: true });
@@ -396,7 +409,9 @@ describe("importDocx", () => {
 
     expect(imported!.evenAndOddHeaders).toBe(true);
     expect(imported!.pageNumberStart).toBe(1);
-    expect(imported!.headers!.even![0].runs).toEqual([{ kind: "text", text: "Even header" }]);
+    expect((imported!.headers!.even![0] as HFParagraph).runs).toEqual([
+      { kind: "text", text: "Even header" },
+    ]);
   });
 
   it("round-trips framed (floating) header paragraphs", async () => {
@@ -416,7 +431,8 @@ describe("importDocx", () => {
     };
     const json: DocJSON = { type: "doc", attrs: { layout }, content: [{ type: "paragraph", content: [t("x")] }] };
     const { layout: imported } = await importDocx(await exportDocx(json, LETTER_PAGE_SETUP));
-    const [flow, framed] = imported!.headers!.default!;
+    const paras = hfSetParagraphs(imported!.headers!.default);
+    const [flow, framed] = paras;
     expect(flow.frame).toBeUndefined();
     expect(framed).toMatchObject({
       floating: true,
@@ -509,7 +525,7 @@ describe("importDocx", () => {
       justifyShrink: 0.25,
     });
     expect(imported!.footers!.first).toEqual([]);
-    expect(imported!.footers!.default![0].runs).toEqual([
+    expect((imported!.footers!.default![0] as HFParagraph).runs).toEqual([
       { kind: "field", field: "PAGE" },
       { kind: "text", text: " of " },
       { kind: "field", field: "NUMPAGES" },
@@ -1057,22 +1073,129 @@ describe("importDocx", () => {
   it("imports Zimmerman Form 3 (header table, Courier cs font, anchored VML signature)", async () => {
     const path = join(process.cwd(), "public", "fixtures", "zimmerman-form3.docx");
     if (!existsSync(path)) return;
-    const { doc } = await importDocx(await readFile(path));
+    const { doc, layout } = await importDocx(await readFile(path));
     const root = schema.nodeFromJSON(doc);
     let form3Format: ParagraphFormat | undefined;
+    let certifyFormat: ParagraphFormat | undefined;
     let anchoredOnUnderline = false;
     root.descendants((n) => {
       if (n.type.name === "paragraph" && n.textContent.trim() === "FORM 3") {
         form3Format = n.attrs.format as ParagraphFormat;
       }
+      if (
+        n.type.name === "paragraph" &&
+        n.textContent.includes("certify that this document is a true and accurate transcript")
+      ) {
+        certifyFormat = n.attrs.format as ParagraphFormat;
+      }
       if (n.type.name === "paragraph" && /_{8,}/.test(n.textContent)) {
         const img = n.firstChild;
-        if (img?.type.name === "image" && img.attrs.anchorX != null) anchoredOnUnderline = true;
+        if (img?.type.name === "image" && img.attrs.anchorX != null) {
+          anchoredOnUnderline = true;
+          expect(img.attrs.anchorY).toBeGreaterThan(-35);
+          expect(img.attrs.anchorY).toBeLessThan(5);
+        }
       }
     });
     expect(form3Format?.fontFamily).toBe("Courier New");
+    expect(certifyFormat?.fontFamily).toBe("Calibri");
     expect(anchoredOnUnderline).toBe(true);
     expect(root.textContent).toContain("Jennifer O'Hare");
+    expect(
+      (layout?.headers?.default ?? []).some((b) => isHFTable(b) && b.insideBorder?.style === "dotted"),
+    ).toBe(true);
+    expect(sectionPageNumberStarts(doc)).toContain(20);
+  });
+
+  it("round-trips Zimmerman Form 3 (VML pict, layout, header table)", async () => {
+    const path = join(process.cwd(), "public", "fixtures", "zimmerman-form3.docx");
+    if (!existsSync(path)) return;
+    const imported = await importDocx(await readFile(path));
+    const json: DocJSON = {
+      ...imported.doc,
+      attrs: { ...imported.doc.attrs, layout: imported.layout ?? null },
+    };
+    const buffer = await exportDocx(json, imported.pageSetup!);
+    const xml = await documentXml(buffer);
+    expect(xml).toMatch(/<w:pict[\s\S]*v:shape/i);
+
+    const round = await importDocx(buffer);
+    expect(sectionPageNumberStarts(round.doc)).toContain(20);
+    expect(xml).toMatch(/<w:pgNumType[^>]*w:start="20"/);
+    const hfTable = (round.layout?.headers?.default ?? []).find(isHFTable);
+    expect(hfTable?.insideBorder?.style).toBe("dotted");
+    const hfRuns = hfTable?.paragraphs.flatMap((p) => p.runs) ?? [];
+    expect(hfRuns.some((r) => r.kind === "field" && r.field === "PAGE")).toBe(true);
+
+    const root = schema.nodeFromJSON(round.doc);
+    let vml = false;
+    root.descendants((n) => {
+      if (n.type.name === "image" && parseVmlAnchorAttr(n.attrs.vmlAnchor)) vml = true;
+    });
+    expect(vml).toBe(true);
+  });
+
+  it("imports header13 table with dotted inside borders and round-trips tblBorders", async () => {
+    const hdr = [
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+      '<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">',
+      "<w:tbl>",
+      "<w:tblPr>",
+      '<w:tblBorders><w:insideH w:val="dotted" w:sz="2" w:space="0" w:color="auto"/>',
+      '<w:insideV w:val="dotted" w:sz="2" w:space="0" w:color="auto"/></w:tblBorders>',
+      "</w:tblPr>",
+      '<w:tr><w:tc><w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r>',
+      "<w:r><w:instrText> PAGE </w:instrText></w:r>",
+      '<w:r><w:fldChar w:fldCharType="separate"/></w:r>',
+      "<w:r><w:t>1</w:t></w:r>",
+      '<w:r><w:fldChar w:fldCharType="end"/></w:r>',
+      "</w:p></w:tc></w:tr>",
+      "</w:tbl></w:hdr>",
+    ].join("");
+    const sectPr =
+      '<w:sectPr><w:headerReference w:type="default" r:id="rId1"/>' +
+      '<w:pgSz w:w="12240" w:h="15840"/>' +
+      '<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>' +
+      "</w:sectPr>";
+    const zip = new JSZip();
+    zip.file(
+      "[Content_Types].xml",
+      '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+        '<Default Extension="xml" ContentType="application/xml"/>' +
+        '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>' +
+        '<Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>' +
+        "</Types>",
+    );
+    zip.file(
+      "word/_rels/document.xml.rels",
+      '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>' +
+        "</Relationships>",
+    );
+    zip.file("word/header1.xml", hdr);
+    zip.file(
+      "word/document.xml",
+      [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">',
+        "<w:body><w:p><w:r><w:t>Body</w:t></w:r></w:p>",
+        sectPr,
+        "</w:body></w:document>",
+      ].join(""),
+    );
+    const imported = await importDocx(await zip.generateAsync({ type: "arraybuffer" }));
+    const table = imported.layout?.headers?.default?.find(isHFTable);
+    expect(table?.insideBorder?.style).toBe("dotted");
+    const json: DocJSON = {
+      ...imported.doc,
+      attrs: { ...imported.doc.attrs, layout: imported.layout ?? null },
+    };
+    const headerXml = await (async () => {
+      const out = await JSZip.loadAsync(await exportDocx(json, imported.pageSetup!));
+      return (await out.file("word/header1.xml")?.async("string")) ?? "";
+    })();
+    expect(headerXml).toMatch(/w:insideH[^>]*w:val="dotted"/);
   });
 
   it("imports body framePr on paragraphs", async () => {

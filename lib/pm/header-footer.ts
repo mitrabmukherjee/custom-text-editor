@@ -1,5 +1,6 @@
 import type { EditorState, Transaction } from "prosemirror-state";
-import type { HFParagraph, HeaderFooterSet, PageInfo } from "./format";
+import type { HFBlock, HFParagraph, HeaderFooterSet, PageInfo } from "./format";
+import { hfSetParagraphs } from "./format";
 import { patchSectionLayout, sectionsOf } from "./sections";
 
 export type HeaderFooterTarget = {
@@ -58,7 +59,7 @@ export function setHeaderFooterText(
   return patchSectionLayout(state, target.section, (section) => {
     const key = target.part === "header" ? "headers" : "footers";
     const set: HeaderFooterSet = { ...(section[key] ?? {}) };
-    set[target.variant] = paragraphs;
+    set[target.variant] = paragraphs.map((p) => ({ ...p, kind: "paragraph" as const }));
     return { ...section, [key]: set };
   });
 }
@@ -82,6 +83,6 @@ export function headerFooterTargetAt(
 export function getHeaderFooterText(state: EditorState, target: HeaderFooterTarget): string {
   const section = sectionsOf(state)[Math.min(target.section, sectionsOf(state).length - 1)] ?? {};
   const set = target.part === "header" ? section.headers : section.footers;
-  const paragraphs = set?.[target.variant] ?? set?.default;
-  return hfPlainText(paragraphs);
+  const blocks = set?.[target.variant] ?? set?.default;
+  return hfPlainText(hfSetParagraphs(blocks));
 }

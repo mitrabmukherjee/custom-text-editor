@@ -1,0 +1,100 @@
+<w:tblGrid>
+<w:gridCol w:w="10064"/>
+</w:tblGrid>
+<w:tr w:rsidR="006921F2" w:rsidRPr="00642666" w14:paraId="544F84D8" w14:textId="77777777" w:rsidTr="00245C93">
+<w:tc>
+<w:tcPr>
+<w:tcW w:w="10064" w:type="dxa"/>
+<w:hideMark/>
+</w:tcPr>
+<w:p w14:paraId="74E019ED" w14:textId="77777777" w:rsidR="006921F2" w:rsidRPr="00640D7F" w:rsidRDefault="006921F2" w:rsidP="00245C93">
+<w:pPr>
+<w:keepNext/>
+<w:spacing w:after="120"/>
+<w:jc w:val="center"/>
+<w:outlineLvl w:val="0"/>
+<w:rPr>
+<w:rFonts w:cs="Courier New"/>
+<w:b/>
+<w:bCs/>
+<w:kern w:val="32"/>
+</w:rPr>
+</w:pPr>
+<w:r w:rsidRPr="00640D7F">
+<w:rPr>
+<w:rFonts w:cs="Courier New"/>
+<w:b/>
+<w:bCs/>
+<w:kern w:val="32"/>
+</w:rPr>
+<w:t>FORM 3</w:t>
+</w:r>
+</w:p>
+</w:tc>
+</w:tr>
+<w:tr w:rsidR="006921F2" w:rsidRPr="00642666" w14:paraId="14E396ED" w14:textId="77777777" w:rsidTr="00245C93">
+<w:tc>
+<w:tcPr>
+<w:tcW w:w="10064" w:type="dxa"/>
+<w:hideMark/>
+</w:tcPr>
+<w:p w14:paraId="09A8341B" w14:textId="77777777" w:rsidR="006921F2" w:rsidRPr="00640D7F" w:rsidRDefault="006921F2" w:rsidP="00245C93">
+<w:pPr>
+<w:keepNext/>
+<w:spacing w:after="120"/>
+<w:jc w:val="center"/>
+<w:outlineLvl w:val="0"/>
+<w:rPr>
+<w:rFonts w:cs="Courier New"/>
+<w:b/>
+<w:bCs/>
+<w:kern w:val="32"/>
+</w:rPr>
+</w:pPr>
+<w:r w:rsidRPr="00640D7F">
+<w:rPr>
+<w:rFonts w:cs="Courier New"/>
+<w:b/>
+<w:bCs/>
+<w:kern w:val="32"/>
+</w:rPr>
+<w:t>ELECTRONIC CERTIFICATE OF TRANSCRIPT (SUBSECTION 5 (2))</w:t>
+</w:r>
+</w:p>
+</w:tc>
+</w:tr>
+<w:tr w:rsidR="006921F2" w:rsidRPr="00642666" w14:paraId="7931663A" w14:textId="77777777" w:rsidTr="00245C93">
+<w:tc>
+<w:tcPr>
+<w:tcW w:w="10064" w:type="dxa"/>
+<w:hideMark/>
+</w:tcPr>
+<w:p w14:paraId="7A21AE87" w14:textId="77777777" w:rsidR="006921F2" w:rsidRPr="00640D7F" w:rsidRDefault="006921F2" w:rsidP="00245C93">
+<w:pPr>
+<w:keepNext/>
+<w:spacing w:after="60"/>
+<w:jc w:val="center"/>
+<w:outlineLvl w:val="1"/>
+<w:rPr>
+<w:rFonts w:cs="Courier New"/>
+<w:b/>
+<w:bCs/>
+<w:i/>
+<w:iCs/>
+<w:lang w:val="x-none"/>
+</w:rPr>
+</w:pPr>
+<w:r w:rsidRPr="00640D7F">
+<w:rPr>
+<w:rFonts w:cs="Courier New"/>
+<w:b/>
+<w:bCs/>
+<w:i/>
+<w:lang w:val="x-none"/>
+</w:rPr>
+<w:t>Evidence Act</w:t>
+</w:r>
+</w:p>
+</w:tc>
+</w:tr>
+</w:tbl>
