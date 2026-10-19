@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { EditorState, TextSelection } from "prosemirror-state";
 import { schema } from "./schema";
-import { insertSectionBreak, sectionIndexAt, sectionsOf } from "./sections";
+import { insertSectionBreak, sectionIndexAt, sectionsOf, setSectionLineNumbers } from "./sections";
 import { setHeaderFooterText } from "./header-footer";
+import type { DocumentLayout } from "./format";
 
 function doc(...content: ReturnType<typeof schema.nodes.paragraph.create>[]) {
   return schema.nodes.doc.create({ layout: { page: { width: 816, height: 1056, marginTop: 96, marginRight: 96, marginBottom: 96, marginLeft: 96, gap: 24 } } }, content);
@@ -45,5 +46,60 @@ describe("sections", () => {
     const paras = sections[0].footers?.default?.[0];
     const runs = paras && paras.kind !== "table" ? paras.runs : [];
     expect(runs.some((r) => r.kind === "field" && r.field === "PAGE")).toBe(true);
+  });
+
+  it("setSectionLineNumbers turns numbering on without creating a Word layout", () => {
+    const plain = EditorState.create({
+      doc: schema.nodes.doc.create(null, [schema.nodes.paragraph.create()]),
+    });
+    const on = plain.apply(setSectionLineNumbers(plain, 0, "newPage")!);
+    expect(on.doc.attrs.layout).toBeNull();
+    expect(on.doc.attrs.lineNumbers).toEqual({ countBy: 1, start: 1, restart: "newPage", distance: 24 });
+    expect(sectionsOf(on)[0].lineNumbers?.restart).toBe("newPage");
+
+    const changed = on.apply(setSectionLineNumbers(on, 0, "continuous")!);
+    expect(changed.doc.attrs.layout).toBeNull();
+    expect(changed.doc.attrs.lineNumbers).toEqual({
+      countBy: 1,
+      start: 1,
+      restart: "continuous",
+      distance: 24,
+    });
+
+    const cleared = changed.apply(setSectionLineNumbers(changed, 0, "none")!);
+    expect(cleared.doc.attrs.lineNumbers).toBeNull();
+    expect(cleared.doc.attrs.layout).toBeNull();
+  });
+
+  it("setSectionLineNumbers keeps imported count, start, distance, and font", () => {
+    const imported = EditorState.create({
+      doc: schema.nodes.doc.create(
+        {
+          layout: {
+            lineNumbers: {
+              countBy: 5,
+              start: 3,
+              restart: "newPage",
+              distance: 36,
+              fontFamily: "Courier New",
+              fontSize: 10,
+            },
+          },
+        },
+        [schema.nodes.paragraph.create()],
+      ),
+    });
+    const changed = imported.apply(setSectionLineNumbers(imported, 0, "continuous")!);
+    expect((changed.doc.attrs.layout as DocumentLayout).lineNumbers).toEqual({
+      countBy: 5,
+      start: 3,
+      restart: "continuous",
+      distance: 36,
+      fontFamily: "Courier New",
+      fontSize: 10,
+    });
+
+    const cleared = changed.apply(setSectionLineNumbers(changed, 0, "none")!);
+    expect((cleared.doc.attrs.layout as DocumentLayout).lineNumbers).toBeNull();
   });
 });

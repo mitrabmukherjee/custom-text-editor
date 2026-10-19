@@ -350,10 +350,16 @@ const baseNodes: Record<string, NodeSpec> = {
     content: "block+",
     /**
      * `layout`: `DocumentLayout` imported from Word (page, header/footer, line numbers).
+     * `lineNumbers`: line numbering for a document that has no Word layout (the last section).
      * `styles`: `StyleDefinition`s added or updated in the editor (override `layout.styles`).
      * `comments`: comment threads by id (`CommentThread`), anchored by `comment` marks.
      */
-    attrs: { layout: { default: null }, styles: { default: null }, comments: { default: null } },
+    attrs: {
+      layout: { default: null },
+      lineNumbers: { default: null },
+      styles: { default: null },
+      comments: { default: null },
+    },
   },
   paragraph: {
     /** `paraChange`: a tracked paragraph formatting revision (`ParagraphChange`). */
@@ -392,7 +398,7 @@ const baseNodes: Record<string, NodeSpec> = {
    */
   speaker_line: {
     attrs: { format: { default: null }, label: { default: "THE COURT:" } },
-    content: "inline*",
+    content: "inline*",    
     group: "block",
     parseDOM: [
       {

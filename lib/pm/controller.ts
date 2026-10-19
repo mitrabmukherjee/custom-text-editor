@@ -15,7 +15,13 @@ import { characterFormatAt } from "./character";
 import { insertPageBreak, isMarkActive } from "./commands";
 import { type HeaderFooterTarget, setHeaderFooterText } from "./header-footer";
 import { mergeTemplateStyles } from "./styles";
-import { sectionIndexAt, setSectionColumns } from "./sections";
+import {
+  sectionIndexAt,
+  sectionsOf,
+  setSectionColumns,
+  setSectionLineNumbers,
+  type LineNumberMode,
+} from "./sections";
 import {
   addComment,
   canAddComment,
@@ -50,7 +56,6 @@ import { textStats, type TextStats } from "./stats";
 import {
   JUSTIFY_SHRINK_VAR,
   pageFrames,
-  sectionLayouts,
   type DocumentLayout,
   type PageFrame,
   type PageInfo,
@@ -616,15 +621,8 @@ export class EditorController {
   getSections(): SectionLayout[] {
     const doc = this.view.state.doc;
     if (this.sectionCache?.doc !== doc) {
-      const breaks: (SectionLayout | null)[] = [];
-      doc.descendants((node) => {
-        if (node.type === schema.nodes.section_break) {
-          breaks.push(node.attrs.section as SectionLayout | null);
-        }
-        return !node.isTextblock;
-      });
       const prev = this.sectionCache?.sections;
-      const sections = sectionLayouts(this.getLayout(), breaks);
+      const sections = sectionsOf(this.view.state);
       const same = prev && JSON.stringify(prev) === JSON.stringify(sections);
       this.sectionCache = { doc, sections: same ? prev : sections };
     }
@@ -696,6 +694,14 @@ export class EditorController {
   setSectionColumns(count: number, space: number) {
     const idx = sectionIndexAt(this.view.state, this.view.state.selection.head);
     const tr = setSectionColumns(this.view.state, idx, count, space);
+    if (!tr) return;
+    this.dispatch(tr);
+    this.relayout();
+  }
+
+  setLineNumbers(mode: LineNumberMode) {
+    const idx = sectionIndexAt(this.view.state, this.view.state.selection.head);
+    const tr = setSectionLineNumbers(this.view.state, idx, mode);
     if (!tr) return;
     this.dispatch(tr);
     this.relayout();

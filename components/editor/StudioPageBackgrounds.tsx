@@ -502,7 +502,7 @@ export function StudioPageBackgrounds({
   const barX = anyLineNumbers
     ? setup.marginLeft - anyLineNumbers.distance - 30
     : setup.marginLeft - 14;
-  const numbered = layout ? lineNumbersByPage(allSections, lines) : new Map<number, NumberedLine[]>();
+  const numbered = lineNumbersByPage(allSections, lines);
   return (
     <div
       className="studio-page-stack"
@@ -577,21 +577,6 @@ export function StudioPageBackgrounds({
                 page={info.number}
                 pageCount={pageCount}
               />
-              {(numbered.get(i) ?? []).map(({ n, line, ln }) => (
-                <span
-                  key={`${n}:${line.top}`}
-                  className="studio-line-number"
-                  style={{
-                    top: line.top,
-                    height: line.bottom - line.top,
-                    lineHeight: `${line.bottom - line.top}px`,
-                    right: setup.width + markupWidth - setup.marginLeft + ln.distance,
-                    ...runStyle(ln),
-                  }}
-                >
-                  {n}
-                </span>
-              ))}
             </>
           ) : (
             <span
@@ -601,6 +586,21 @@ export function StudioPageBackgrounds({
               Page {info.number}
             </span>
           )}
+          {(numbered.get(i) ?? []).map(({ n, line, ln }) => (
+            <span
+              key={`${n}:${line.top}`}
+              className="studio-line-number"
+              style={{
+                top: line.top,
+                height: line.bottom - line.top,
+                lineHeight: `${line.bottom - line.top}px`,
+                right: setup.width + markupWidth - setup.marginLeft + ln.distance,
+                ...runStyle(ln),
+              }}
+            >
+              {n}
+            </span>
+          ))}
         </div>
         );
       })}
