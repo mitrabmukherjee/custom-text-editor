@@ -265,6 +265,12 @@ export function StudioEditorChrome({
   const pasteMode = controller?.getPasteMode() ?? "auto";
   const paragraph = controller?.getParagraphFormat() ?? {};
   const align = paragraph.align ?? "left";
+  const sections = controller ? sectionsOf(controller.state) : [];
+  const sectionIndex = controller
+    ? Math.min(sectionIndexAt(controller.state, controller.state.selection.head), Math.max(0, sections.length - 1))
+    : 0;
+  const currentSection = sections[sectionIndex];
+  const lineRestart = currentSection?.lineNumbers?.restart;
   const list = controller ? activeList(controller.state) : null;
   const { bullet_list, ordered_list } = schema.nodes;
 
@@ -501,6 +507,39 @@ export function StudioEditorChrome({
         label: "Columns\u2026",
         disabled: readOnly,
         run: () => setColumnsDialog(true),
+      },
+      {
+        label: "Line numbers: None",
+        checked: !lineRestart,
+        disabled: readOnly,
+        run: () => controller?.setLineNumbers("none"),
+      },
+      {
+        label: "Line numbers: Restart Each Page",
+        checked: lineRestart === "newPage",
+        disabled: readOnly,
+        run: () => controller?.setLineNumbers("newPage"),
+      },
+      {
+        label: "Line numbers: Restart Each Section",
+        checked: lineRestart === "newSection",
+        disabled: readOnly,
+        run: () => controller?.setLineNumbers("newSection"),
+      },
+      {
+        label: "Line numbers: Continuous",
+        checked: lineRestart === "continuous",
+        disabled: readOnly,
+        run: () => controller?.setLineNumbers("continuous"),
+      },
+      {
+        label: "Suppress line numbers",
+        checked: !!paragraph.suppressLineNumbers,
+        disabled: readOnly,
+        run: () =>
+          controller?.setParagraphFormat({
+            suppressLineNumbers: paragraph.suppressLineNumbers ? undefined : true,
+          }),
       },
     ],
     Table: [
@@ -934,22 +973,8 @@ export function StudioEditorChrome({
 
       {columnsDialog && controller && (
         <SectionColumnsDialog
-          count={
-            sectionsOf(controller.state)[
-              Math.min(
-                sectionIndexAt(controller.state, controller.state.selection.head),
-                sectionsOf(controller.state).length - 1,
-              )
-            ]?.columns?.count ?? 1
-          }
-          space={
-            sectionsOf(controller.state)[
-              Math.min(
-                sectionIndexAt(controller.state, controller.state.selection.head),
-                sectionsOf(controller.state).length - 1,
-              )
-            ]?.columns?.space ?? 48
-          }
+          count={currentSection?.columns?.count ?? 1}
+          space={currentSection?.columns?.space ?? 48}
           onClose={() => {
             setColumnsDialog(false);
             controller.focus();

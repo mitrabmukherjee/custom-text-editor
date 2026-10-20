@@ -1,5 +1,5 @@
 import { NodeSelection, TextSelection, type Command, type EditorState, type Transaction } from "prosemirror-state";
-import type { DocumentLayout, SectionLayout, SectionStart } from "./format";
+import type { DocumentLayout, LineNumbering, SectionLayout, SectionStart } from "./format";
 import { sectionLayouts } from "./format";
 import { schema } from "./schema";
 import { SKIP_TRACKING } from "./track-changes";
@@ -22,7 +22,15 @@ export function sectionsOf(state: EditorState): SectionLayout[] {
     }
     return !node.isTextblock;
   });
-  return sectionLayouts(layout, breaks);
+  const sections = sectionLayouts(layout, breaks);
+  if (!layout) {
+    const last = sections.length - 1;
+    sections[last] = {
+      ...sections[last],
+      lineNumbers: (state.doc.attrs.lineNumbers as LineNumbering | null) ?? null,
+    };
+  }
+  return sections;
 }
 
 /** Insert a Word section break; `start` is how the following section begins. */
@@ -91,5 +99,54 @@ export function setSectionColumns(
   return patchSectionLayout(state, sectionIndex, (section) => ({
     ...section,
     columns: cols,
+  }));
+}
+
+/** How line numbers restart, or `"none"` to turn them off. */
+export type LineNumberMode = "none" | LineNumbering["restart"];
+
+const DEFAULT_LINE_NUMBERS: LineNumbering = {
+  countBy: 1,
+  start: 1,
+  restart: "newPage",
+  distance: 24,
+};
+
+function lineNumbersFor(prev: LineNumbering | null | undefined, mode: LineNumberMode): LineNumbering | null {
+  if (mode === "none") return null;
+  return {
+    countBy: prev?.countBy ?? DEFAULT_LINE_NUMBERS.countBy,
+    start: prev?.start ?? DEFAULT_LINE_NUMBERS.start,
+    restart: mode,
+    distance: prev?.distance ?? DEFAULT_LINE_NUMBERS.distance,
+    ...(prev?.fontFamily ? { fontFamily: prev.fontFamily } : {}),
+    ...(prev?.fontSize !== undefined ? { fontSize: prev.fontSize } : {}),
+  };
+}
+
+/**
+ * Turn line numbers on or off for one section. Restart changes keep imported count, start, distance, and font.
+ * A document with no Word layout stores them on the doc, so the page stays as it is.
+ */
+export function setSectionLineNumbers(
+  state: EditorState,
+  sectionIndex: number,
+  mode: LineNumberMode,
+): Transaction | null {
+  const layout = state.doc.attrs.layout as DocumentLayout | null;
+  let breaks = 0;
+  state.doc.descendants((node) => {
+    if (node.type === schema.nodes.section_break) breaks += 1;
+    return !node.isTextblock;
+  });
+  if (!layout && sectionIndex >= breaks) {
+    const prev = state.doc.attrs.lineNumbers as LineNumbering | null;
+    return state.tr
+      .setDocAttribute("lineNumbers", lineNumbersFor(prev, mode))
+      .setMeta(SKIP_TRACKING, true);
+  }
+  return patchSectionLayout(state, sectionIndex, (section) => ({
+    ...section,
+    lineNumbers: lineNumbersFor(section.lineNumbers, mode),
   }));
 }

@@ -117,6 +117,7 @@ The editor is plain ProseMirror (no TipTap). `TranscriptEditor` creates one `Edi
 - **Section breaks** (Insert menu): next page, continuous, even page, odd page. Each break stores that section's `SectionLayout` and how the following section starts.
 - **Headers and footers**: double-click the header or footer band on a page sheet (Word layout only) to edit plain text; use `{PAGE}`, `{NUMPAGES}`, or `{SECTIONPAGES}` for fields. Changes are undoable and relayout the page frame.
 - **Columns** (Layout ▸ Columns): sets `section.columns` on the current section for export. The editor still draws a single column on screen.
+- **Line numbers** (Layout menu): None, Restart Each Page, Restart Each Section, or Continuous on the current section. Numbers are drawn in the left margin of the current page, the way Word shows them. Defaults are count by 1, start at 1, and a 0.25" gap; switching restart mode keeps an imported count, start, distance, and font. A plain-text document keeps its page (the "Page N" footer stays); the setting is stored on the doc and exported as `w:lnNumType`. A Word document stores it on the section layout. Suppress line numbers toggles the current paragraph.
 
 ### Transcript blocks
 

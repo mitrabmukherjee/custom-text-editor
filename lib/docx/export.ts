@@ -49,6 +49,7 @@ import {
   type HFFrame,
   type HFBlock,
   type HFParagraph,
+  type LineNumbering,
   type ParagraphChange,
   ParagraphFormat,
   SectionLayout,
@@ -1046,6 +1047,7 @@ export async function exportDocx(
   options: ExportDocxOptions = {},
 ): Promise<ArrayBuffer> {
   const layout = (json.attrs?.layout as DocumentLayout | null | undefined) ?? null;
+  const plainLineNumbers = (json.attrs?.lineNumbers as LineNumbering | null | undefined) ?? null;
   const styles = exportStyles(json);
   const threads = (json.attrs?.comments as Record<string, CommentThread> | null | undefined) ?? {};
   const comments = new CommentNumbers(threads);
@@ -1054,7 +1056,7 @@ export async function exportDocx(
   if (!builder.paragraphs.length) builder.paragraphs.push(new Paragraph({}));
   const chunks: SectionChunk[] = [
     ...builder.sections,
-    { start: builder.start, layout: layout ? { ...layout, page: setup } : null, paragraphs: builder.paragraphs },
+    { start: builder.start, layout: layout ? { ...layout, page: setup } : plainLineNumbers ? { lineNumbers: plainLineNumbers } : null, paragraphs: builder.paragraphs },
   ];
 
   const doc = new Document({
