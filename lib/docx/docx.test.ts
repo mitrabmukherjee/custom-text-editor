@@ -1122,6 +1122,7 @@ describe("importDocx", () => {
     const round = await importDocx(buffer);
     expect(sectionPageNumberStarts(round.doc)).toContain(20);
     expect(xml).toMatch(/<w:pgNumType[^>]*w:start="20"/);
+    expect(xml).toMatch(/<w:docGrid[^>]*w:linePitch="360"/);
     const hfTable = (round.layout?.headers?.default ?? []).find(isHFTable);
     expect(hfTable?.insideBorder?.style).toBe("dotted");
     const hfRuns = hfTable?.paragraphs.flatMap((p) => p.runs) ?? [];

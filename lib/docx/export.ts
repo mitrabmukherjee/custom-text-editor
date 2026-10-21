@@ -855,7 +855,13 @@ function hfParagraphs(paragraphs: HFParagraph[]): Paragraph[] {
             if (run.kind === "field") {
               return new TextRun({
                 ...options,
-                children: [run.field === "PAGE" ? PageNumber.CURRENT : PageNumber.TOTAL_PAGES],
+                children: [
+                  run.field === "PAGE"
+                    ? PageNumber.CURRENT
+                    : run.field === "SECTIONPAGES"
+                      ? PageNumber.TOTAL_PAGES_IN_SECTION
+                      : PageNumber.TOTAL_PAGES,
+                ],
               });
             }
             return new TextRun({ ...options, text: run.text });
@@ -1087,5 +1093,10 @@ export async function exportDocx(
 
   const packed = await Packer.toArrayBuffer(doc);
   const { patchVmlSignatures } = await import("./vmlExport");
-  return patchVmlSignatures(packed, json);
+  const { patchDocGridLinePitch } = await import("./docGridExport");
+  const withVml = await patchVmlSignatures(packed, json);
+  return patchDocGridLinePitch(
+    withVml,
+    chunks.map((chunk) => chunk.layout?.docGridLinePitch),
+  );
 }

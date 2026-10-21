@@ -1,10 +1,12 @@
 export {
   computePageBreaks,
+  computePageBreaksWithContext,
   type ComputedBreak,
   type ComputedLayout,
   type LayoutLine,
   type LinePlacement,
 } from "./computePageBreaks";
+export { stackHeightFromContext } from "./geometryPaginate";
 export {
   LETTER_PAGE_SETUP,
   TWIPS_PER_PX,

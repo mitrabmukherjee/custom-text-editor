@@ -192,10 +192,6 @@
   margin: 0;
   padding: var(--margin-top) var(--margin-right) var(--margin-bottom) var(--margin-left);
   outline: none;
-  font-family: "Times New Roman", Times, "Liberation Serif", serif;
-  font-size: 12pt;
-  line-height: 24pt;
-  color: #f4f4f5;
   background: transparent;
 }
 
@@ -286,7 +282,12 @@
 }
 
 .pm-page-break-widget {
-  display: block;
+  display: inline-block;
+  width: 100%;
+  box-sizing: border-box;
+  flex-shrink: 0;
+  vertical-align: top;
+  overflow: hidden;
   user-select: none;
   pointer-events: none;
 }
@@ -429,6 +430,14 @@
     0 12px 32px rgb(0 0 0 / 0.12);
 }
 
+.transcript-editor-root .studio-column-guide {
+  position: absolute;
+  pointer-events: none;
+  box-sizing: border-box;
+  border-left: 1px dashed rgb(113 113 122 / 0.35);
+  border-right: 1px dashed rgb(113 113 122 / 0.35);
+}
+
 .transcript-editor-root .paper--word .ProseMirror {
   font-family: "Times New Roman", Times, "Liberation Serif", serif;
   font-size: 10pt;
@@ -436,6 +445,50 @@
   white-space: pre-wrap;
   font-kerning: none;
   color: #18181b;
+  /* Bottom margin comes from page-break spacers + page sheet, not extra padding. */
+  padding-bottom: 0;
+}
+
+/* Engine line breaks (word-layout) — force the browser to wrap like Word. */
+.transcript-editor-root .paper--word .ProseMirror .pm-engine-line-break {
+  display: inline-block;
+  width: 100%;
+  height: 0;
+  overflow: hidden;
+  vertical-align: top;
+  pointer-events: none;
+  user-select: none;
+}
+
+.transcript-editor-root .paper--word .studio-line-number {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  box-sizing: border-box;
+}
+
+/* Grid sections only (see schema data-doc-grid); not section 0 title pages. */
+.transcript-editor-root .paper--word .ProseMirror [data-doc-grid] {
+  font-family: "Courier New", Courier, "Liberation Mono", monospace;
+}
+
+/* Collapsed spacer paragraphs (non-grid docs only; grid keeps one pitch row per empty w:p). */
+.transcript-editor-root
+  .paper--word
+  .ProseMirror
+  p[data-pm-format]:not([data-doc-grid]):not(:has(.pm-image-wrap)):empty,
+.transcript-editor-root
+  .paper--word
+  .ProseMirror
+  p[data-pm-format]:not([data-doc-grid]):not(:has(.pm-image-wrap)):has(
+    > br.ProseMirror-trailingBreak:only-child
+  ) {
+  min-height: 0;
+  line-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  height: 0;
+  overflow: hidden;
 }
 
 .transcript-editor-root .paper--word .studio-hf,

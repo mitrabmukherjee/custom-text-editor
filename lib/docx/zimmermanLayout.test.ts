@@ -16,5 +16,6 @@ describe("Zimmerman Form 3 layout metadata", () => {
     expect(sections.some((s) => s.pageNumberStart === 20)).toBe(true);
     expect(sections.some((s) => s.docGridLinePitch === 360)).toBe(true);
     expect(layout?.docGridLinePitch).toBeDefined();
+    expect(sections.some((s) => s.lineNumbers?.countBy === 5)).toBe(true);
   });
 });

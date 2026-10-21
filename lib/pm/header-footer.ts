@@ -18,6 +18,7 @@ export function hfPlainText(paragraphs: HFParagraph[] | undefined): string {
         .map((r) => {
           if (r.kind === "field") {
             if (r.field === "PAGE") return "{PAGE}";
+            if (r.field === "SECTIONPAGES") return "{SECTIONPAGES}";
             return "{NUMPAGES}";
           }
           if (r.kind === "tab") return "\t";
@@ -35,7 +36,8 @@ function parseRuns(line: string): HFParagraph["runs"] {
   let m: RegExpExecArray | null;
   while ((m = re.exec(line))) {
     if (m.index > last) runs.push({ kind: "text", text: line.slice(last, m.index) });
-    const field = m[1] === "PAGE" ? "PAGE" : "NUMPAGES";
+    const field =
+      m[1] === "PAGE" ? "PAGE" : m[1] === "SECTIONPAGES" ? "SECTIONPAGES" : "NUMPAGES";
     runs.push({ kind: "field", field });
     last = m.index + m[0].length;
   }

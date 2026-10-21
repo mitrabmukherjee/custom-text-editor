@@ -81,9 +81,9 @@ export function EditorDemo() {
   }, []);
 
   const loadSample = (id: SampleId) => {
-    editorRef.current?.setPlainText(SAMPLES[id].text);
+    editorRef.current?.loadPlainText(SAMPLES[id].text);
     refreshStats();
-    pushLog(`Loaded "${SAMPLES[id].label}" via setPlainText()`);
+    pushLog(`Loaded "${SAMPLES[id].label}" via loadPlainText()`);
   };
 
   const openDocx = async (file: File | undefined) => {

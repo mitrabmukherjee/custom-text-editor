@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { computePageBreaks, type LayoutLine } from "./computePageBreaks";
+import { gridStackTop } from "./gridStack";
 import { LETTER_PAGE_SETUP, contentHeight, pageStride, stackHeight } from "./pageSetup";
 
 const setup = LETTER_PAGE_SETUP;
@@ -98,6 +99,21 @@ describe("computePageBreaks", () => {
     expect(computePageBreaks(lines(30, 30), setup).breaks[0].lineIndex).toBe(28);
   });
 
+  it("fits more lines when non-grid slack hangs below glyphs", () => {
+    const gridLine = 28;
+    const slack = 4;
+    const loose = lines(35, gridLine).map((l) => ({ ...l, slack }));
+    expect(computePageBreaks(loose, setup).breaks[0].lineIndex).toBe(31);
+    expect(computePageBreaks(lines(35, gridLine), setup).breaks[0].lineIndex).toBe(30);
+  });
+
+  it("preserves rowHeight on placements for grid rows", () => {
+    const input = lines(3, 24).map((l) => ({ ...l, rowHeight: 24, slack: 8 }));
+    const { placements } = computePageBreaks(input, setup);
+    expect(placements[0].rowHeight).toBe(24);
+    expect(placements[0].bottom - placements[0].top).toBe(24);
+  });
+
   it("respects custom margins", () => {
     const tight = { ...setup, marginTop: 48, marginBottom: 48 };
     // 960px usable → 30 lines of 32px fit.
@@ -163,5 +179,15 @@ describe("computePageBreaks", () => {
       { section: 0, first: false, number: 2 },
       { section: 1, first: true, number: 1 },
     ]);
+  });
+});
+
+describe("gridStackTop", () => {
+  it("uses the stacked slot when continuing a grid section", () => {
+    expect(gridStackTop(151, 148)).toBe(148);
+  });
+
+  it("uses DOM top for the first row in a section", () => {
+    expect(gridStackTop(96, undefined)).toBe(96);
   });
 });

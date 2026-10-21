@@ -1,4 +1,5 @@
 import type { PageSetup } from "./pagination/pageSetup";
+import { TWIPS_PER_PX } from "./pagination/pageSetup";
 
 /** Word's single line height is about 1.15x the font size for Times New Roman and Arial. */
 export const SINGLE_LINE_FACTOR = 1.15;
@@ -49,6 +50,11 @@ export type ParagraphFormat = {
   boxBorder?: Partial<
     Record<"top" | "right" | "bottom" | "left", ParagraphBorderSide>
   >;
+  /**
+   * Section `w:docGrid` pitch (twips) when this paragraph lives in a grid section.
+   * Set on import so CSS line metrics match pagination without a live section index.
+   */
+  docGridSectionPitchTwips?: number;
 };
 
 export type TableAlign = "left" | "center" | "right";
@@ -108,7 +114,7 @@ type HFRunStyle = {
 
 export type HFRun =
   | ({ kind: "text"; text: string } & HFRunStyle)
-  | ({ kind: "field"; field: "PAGE" | "NUMPAGES" } & HFRunStyle)
+  | ({ kind: "field"; field: "PAGE" | "NUMPAGES" | "SECTIONPAGES" } & HFRunStyle)
   | { kind: "tab" };
 
 /** Position of a Word frame (`w:framePr`). Lengths are px. */
@@ -211,14 +217,23 @@ export type StyleDefinition = {
  * Document-level Word layout, stored on the doc node's `layout` attribute. Its section
  * fields describe the last section; earlier sections live on `section_break` nodes.
  */
+export type DocumentCompat = {
+  compatibilityMode?: number;
+  htmlAutoSpacing?: boolean;
+};
+
 export type DocumentLayout = SectionLayout & {
   defaultTabStop?: number;
+  /** From `word/settings.xml` compatibility settings. */
+  compat?: DocumentCompat;
   /** Fraction of a space that justified lines may give up to fit another word. */
   justifyShrink?: number;
   /** Separate headers/footers on even pages (`w:evenAndOddHeaders`). */
   evenAndOddHeaders?: boolean;
   /** Style definitions, for the styles gallery. */
   styles?: StyleDefinition[];
+  /** When true, word-layout engine may drive pagination (DOCX import). Studio layout sets false. */
+  layoutEngine?: boolean;
 };
 
 /** Which page of a section a page is, for picking its header/footer. */
@@ -266,24 +281,139 @@ function spaceEm(family: string | undefined): number {
   return 0.25;
 }
 
-/** One line's box height in px from Word paragraph format (matches `hfParagraphHeight` / CSS intent). */
-export function paragraphLineHeightPx(format: ParagraphFormat | null | undefined): number | undefined {
+/** Section-level inputs for Word line box metrics (`w:spacing` + `w:docGrid`). */
+export type LineMetricsContext = {
+  docGridLinePitchTwips?: number;
+};
+
+export function lineMetricsContextFromFormat(
+  format: ParagraphFormat | null | undefined,
+): LineMetricsContext {
+  const twips = format?.docGridSectionPitchTwips;
+  return twips ? { docGridLinePitchTwips: twips } : {};
+}
+
+export function docGridPitchPxFromTwips(twips: number): number {
+  return twips / TWIPS_PER_PX;
+}
+
+/** Single-line height in px (grid sections: font em box; otherwise Word's ~1.15×). */
+export function singleLinePx(fontPt: number, context: LineMetricsContext = {}): number {
+  const base = fontPt * PT_TO_PX;
+  return context.docGridLinePitchTwips ? base : base * SINGLE_LINE_FACTOR;
+}
+
+/** One line's layout box height in px (CSS `line-height` and pagination). */
+export function lineBoxPx(
+  format: ParagraphFormat | null | undefined,
+  context: LineMetricsContext = {},
+): number | undefined {
   if (!format) return undefined;
   const fontPt = format.fontSize ?? 10;
-  const single = fontPt * PT_TO_PX * SINGLE_LINE_FACTOR;
+  const single = singleLinePx(fontPt, context);
   const { lineRule, lineValue } = format;
   if (!lineRule || lineValue === undefined) return format.fontSize ? single : undefined;
-  if (lineRule === "auto") return single * lineValue;
-  if (lineRule === "exact") return lineValue;
-  if (lineRule === "atLeast") return Math.max(single, lineValue);
-  return undefined;
+
+  let box: number;
+  if (lineRule === "auto") box = single * lineValue;
+  else if (lineRule === "exact") box = lineValue;
+  else if (lineRule === "atLeast") box = Math.max(single, lineValue);
+  else return undefined;
+
+  const pitchTwips = context.docGridLinePitchTwips;
+  if (pitchTwips && lineRule === "auto") {
+    const pitchPx = docGridPitchPxFromTwips(pitchTwips);
+    const product = single * lineValue;
+    if (Math.abs(product - pitchPx) < 0.51) box = pitchPx;
+    // Word doc grid: single spacing still advances one linePitch row (e.g. 360 twips).
+    else if (lineValue === 1 && box < pitchPx) box = pitchPx;
+    // 1.5× (etc.) between one and two pitches: Word advances whole grid rows (e.g. 272 twips @ 11.5pt).
+    else if (lineValue < 2 && product > pitchPx + 0.51) {
+      const rows = Math.ceil(product / pitchPx);
+      box = rows * pitchPx;
+    }
+  }
+  return box;
+}
+
+export type ResolvedLineMetrics = {
+  lineBoxPx: number | undefined;
+  singleLinePx: number;
+  /** Use pixel `line-height` in CSS (grid snap, exact, atLeast). */
+  lineHeightPx: boolean;
+  /** Top-align glyphs in the line box (grid or Word multiple > 1). */
+  topAlign: boolean;
+};
+
+export function resolveLineMetrics(
+  format: ParagraphFormat | null | undefined,
+  context: LineMetricsContext = {},
+): ResolvedLineMetrics {
+  const fontPt = format?.fontSize ?? 10;
+  const single = singleLinePx(fontPt, context);
+  const box = lineBoxPx(format, context);
+  const mult = format?.lineRule === "auto" ? (format.lineValue ?? 1) : 1;
+  const grid = !!context.docGridLinePitchTwips;
+  return {
+    lineBoxPx: box,
+    singleLinePx: single,
+    lineHeightPx:
+      format?.lineRule === "exact" ||
+      format?.lineRule === "atLeast" ||
+      (grid && format?.lineRule === "auto"),
+    topAlign: grid || (format?.lineRule === "auto" && mult > 1),
+  };
+}
+
+/** Small top inset so margin digits sit nearer the text baseline in a doc-grid row. */
+export function gridLineNumberPaddingTop(lineBoxPx: number, fontSizePt = 12): number {
+  const content = fontSizePt * PT_TO_PX;
+  return Math.max(0, Math.min(lineBoxPx - 1, (lineBoxPx - content) * 0.35));
+}
+
+/** Slack below glyphs that may hang past the page bottom (pagination). */
+export function lineBoxSlack(
+  lineBox: number,
+  glyphHeight: number,
+  format: ParagraphFormat | null | undefined,
+  context: LineMetricsContext = {},
+): number {
+  const mult = format?.lineRule === "auto" ? (format.lineValue ?? 1) : 1;
+  if (context.docGridLinePitchTwips) {
+    const pitchPx = docGridPitchPxFromTwips(context.docGridLinePitchTwips);
+    if (Math.abs(lineBox - pitchPx) < 0.51) return 0;
+    return Math.max(0, lineBox - glyphHeight);
+  }
+  if (format?.lineRule === "auto" && mult > 1) return lineBox - lineBox / mult;
+  if (format?.lineRule === "exact" || format?.lineRule === "atLeast") {
+    return Math.max(0, lineBox - glyphHeight);
+  }
+  return lineBox - lineBox / mult;
+}
+
+/** One line's box height in px from Word paragraph format (matches `hfParagraphHeight` / CSS intent). */
+export function paragraphLineHeightPx(
+  format: ParagraphFormat | null | undefined,
+  context?: LineMetricsContext,
+): number | undefined {
+  const ctx = context ?? lineMetricsContextFromFormat(format);
+  return lineBoxPx(format, ctx);
 }
 
 /** CSS line-height for a paragraph format, or undefined for the stylesheet default. */
-export function lineHeightCss(format: ParagraphFormat): string | undefined {
+export function lineHeightCss(
+  format: ParagraphFormat,
+  context?: LineMetricsContext,
+): string | undefined {
+  const ctx = context ?? lineMetricsContextFromFormat(format);
+  const metrics = resolveLineMetrics(format, ctx);
   const { lineRule, lineValue } = format;
   if (!lineRule || lineValue === undefined) {
-    return format.fontSize ? String(SINGLE_LINE_FACTOR) : undefined;
+    if (!format.fontSize) return undefined;
+    return metrics.lineHeightPx ? `${round(metrics.singleLinePx)}px` : String(SINGLE_LINE_FACTOR);
+  }
+  if (metrics.lineHeightPx && metrics.lineBoxPx !== undefined) {
+    return `${round(metrics.lineBoxPx)}px`;
   }
   if (lineRule === "auto") return String(round(SINGLE_LINE_FACTOR * lineValue));
   if (lineRule === "exact") return `${round(lineValue)}px`;
@@ -328,8 +458,10 @@ export function paragraphStyle(format: ParagraphFormat | null | undefined): CssD
   }
   let padLeft = format.indentLeft ?? 0;
   let padRight = format.indentRight ?? 0;
-  let padTop = format.spaceBefore ?? 0;
-  let padBottom = format.spaceAfter ?? 0;
+  // Doc-grid body: vertical rhythm is the line pitch, not w:before/w:after padding.
+  const onDocGrid = !!format.docGridSectionPitchTwips;
+  let padTop = onDocGrid ? 0 : (format.spaceBefore ?? 0);
+  let padBottom = onDocGrid ? 0 : (format.spaceAfter ?? 0);
   if (format.indentFirstLine) css.textIndent = `${round(format.indentFirstLine)}px`;
   if (format.fontFamily) css.fontFamily = fontStack(format.fontFamily);
   if (format.fontSize) css.fontSize = `${round(format.fontSize)}pt`;
@@ -390,6 +522,14 @@ export function runCss(run: {
   return base ? `${base}; font-kerning: auto` : "font-kerning: auto";
 }
 
+function hfParagraphHasContent(p: HFParagraph): boolean {
+  if (p.floating) return false;
+  if (p.format.boxBorder) return true;
+  return p.runs.some(
+    (r) => r.kind === "field" || (r.kind === "text" && r.text.replace(/\s/g, "").length > 0),
+  );
+}
+
 /** Height in px of one line of a header/footer paragraph (assumes it does not wrap). */
 function hfParagraphHeight(p: HFParagraph): number {
   if (p.floating) return 0;
@@ -397,17 +537,21 @@ function hfParagraphHeight(p: HFParagraph): number {
     .map((r) => (r.kind === "tab" ? undefined : r.fontSize))
     .filter((s): s is number => !!s);
   const fontPt = Math.max(p.format.fontSize ?? 10, ...sizes);
-  const single = fontPt * PT_TO_PX * SINGLE_LINE_FACTOR;
-  const { lineRule, lineValue } = p.format;
-  let line = single;
-  if (lineRule === "auto" && lineValue) line = single * lineValue;
-  else if (lineRule === "exact" && lineValue) line = lineValue;
-  else if (lineRule === "atLeast" && lineValue) line = Math.max(single, lineValue);
+  const ctx = lineMetricsContextFromFormat(p.format);
+  const line = lineBoxPx(p.format, ctx) ?? singleLinePx(fontPt, ctx);
   return line + (p.format.spaceBefore ?? 0) + (p.format.spaceAfter ?? 0);
 }
 
-export function headerFooterHeight(blocks: HFBlock[] | undefined): number {
-  return hfSetParagraphs(blocks).reduce((sum, p) => sum + hfParagraphHeight(p), 0);
+export function headerFooterHeight(
+  blocks: HFBlock[] | undefined,
+  _section?: SectionLayout | null,
+): number {
+  const paragraphs = hfSetParagraphs(blocks);
+  let end = paragraphs.length;
+  while (end > 0 && !hfParagraphHasContent(paragraphs[end - 1])) end -= 1;
+  let sum = 0;
+  for (let i = 0; i < end; i++) sum += hfParagraphHeight(paragraphs[i]);
+  return sum;
 }
 
 /** Which header/footer of a section applies to a page. */
@@ -418,8 +562,8 @@ export function headerFooterFor(
   evenAndOdd = false,
 ): HFBlock[] | undefined {
   if (!set) return undefined;
-  if (page.first && section?.titlePage) return set.first;
-  if (evenAndOdd && page.number % 2 === 0) return set.even;
+  if (page.first && section?.titlePage && set.first?.length) return set.first;
+  if (evenAndOdd && page.number % 2 === 0 && set.even?.length) return set.even;
   return set.default;
 }
 
@@ -452,12 +596,14 @@ export function pageFrames(
     const marginBottom = section.page?.marginBottom ?? setup.marginBottom;
     const header = headerFooterFor(section.headers, section, page, layout.evenAndOddHeaders);
     const footer = headerFooterFor(section.footers, section, page, layout.evenAndOddHeaders);
+    const headerDist = section.headerDistance ?? 48;
+    const footerDist = section.footerDistance ?? 48;
     const frame = {
       top: header?.length
-        ? Math.max(marginTop, (section.headerDistance ?? 0) + headerFooterHeight(header))
+        ? Math.max(marginTop, headerDist + headerFooterHeight(header, section))
         : marginTop,
       bottom: footer?.length
-        ? Math.max(marginBottom, (section.footerDistance ?? 0) + headerFooterHeight(footer))
+        ? Math.max(marginBottom, footerDist + headerFooterHeight(footer, section))
         : marginBottom,
     };
     cache.set(key, frame);

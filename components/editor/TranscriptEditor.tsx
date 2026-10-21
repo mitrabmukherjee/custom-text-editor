@@ -24,7 +24,7 @@ import type { PageInfo } from "@/lib/pm/format";
 import type { Author } from "@/lib/pm/track-changes";
 import { safeHref } from "@/lib/pm/schema";
 import { TABLE_COMMANDS } from "@/lib/pm/tables";
-import { plainTextToDoc } from "@/lib/serializers/plainText";
+import { ensureStudioLayout, studioDocFromPlainText } from "@/lib/pm/defaultLayout";
 import { TextSelection } from "prosemirror-state";
 import { CommentDialog } from "./CommentDialog";
 import { ContextMenu, type ContextMenuState } from "./ContextMenu";
@@ -172,13 +172,17 @@ export function TranscriptEditor(props: TranscriptEditorProps) {
       if (!el) return;
       const p = latest.current;
       loadedContent.current = p.initialContent;
+      const setup = p.pageSetup ?? LETTER_PAGE_SETUP;
+      const initialDoc = p.initialJson
+        ? ensureStudioLayout(p.initialJson, setup)
+        : studioDocFromPlainText(p.initialContent ?? "", setup);
       const c = new EditorController(el, {
-        doc: p.initialJson ?? plainTextToDoc(p.initialContent ?? ""),
+        doc: initialDoc,
         editable: p.editable ?? true,
         placeholder: p.placeholder ?? DEFAULT_PLACEHOLDER,
         author: p.author ?? DEFAULT_AUTHOR,
         trackChanges: p.trackChanges ?? false,
-        pageSetup: p.pageSetup ?? LETTER_PAGE_SETUP,
+        pageSetup: setup,
         pinPageSetup: !!p.pageSetup,
         onLayout: (layout) => {
           setPages(layout.pages);
@@ -323,6 +327,7 @@ export function TranscriptEditor(props: TranscriptEditorProps) {
       getJson: () => controller?.getJson() ?? { type: "doc", content: [] },
       setJson: (json) => controller?.load(json),
       setPlainText: (plain) => controller?.setPlainText(plain),
+      loadPlainText: (plain) => controller?.loadPlainText(plain),
       focus: () => controller?.focus(),
       importDocx: async (buffer) => {
         if (!controller) throw new Error("Editor not ready");
@@ -563,7 +568,7 @@ export function TranscriptEditor(props: TranscriptEditorProps) {
           >
             <div
               ref={paperRef}
-              className={["paper", layout ? "paper--word" : ""].filter(Boolean).join(" ")}
+              className="paper paper--word"
               style={{
                 ...pageCssVars(setup, firstPageTop, markupWidth),
                 transform: zoom === 1 ? undefined : `scale(${zoom})`,

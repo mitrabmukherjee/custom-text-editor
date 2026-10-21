@@ -1,0 +1,10 @@
+{
+  "fixture": "form2-paragraph.docx",
+  "pageCount": 1,
+  "lineCount": 2,
+  "lineAnchorHash": "2d8cddd0fbc21632",
+  "perPageLines": [
+    2
+  ],
+  "breakLineIndices": []
+}

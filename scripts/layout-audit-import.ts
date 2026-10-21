@@ -1,6 +1,12 @@
 import { readFileSync } from "fs";
 import { importDocx } from "../lib/docx/import";
-import { hfSetParagraphs, isHFTable } from "../lib/pm/format";
+import {
+  hfSetParagraphs,
+  isHFTable,
+  lineBoxPx,
+  lineMetricsContextFromFormat,
+  paragraphCss,
+} from "../lib/pm/format";
 import { sectionsOf } from "../lib/pm/sections";
 import { schema } from "../lib/pm/schema";
 import { EditorState } from "prosemirror-state";
@@ -61,6 +67,14 @@ async function main() {
   }
   for (const [i, sec] of sections.entries()) {
     if (sec.pageNumberStart != null) console.log(`  section[${i}] pageNumberStart:`, sec.pageNumberStart);
+    if (sec.docGridLinePitch != null) {
+      console.log(`  section[${i}] docGridLinePitch:`, sec.docGridLinePitch);
+    }
+    if (sec.lineNumbers) {
+      console.log(
+        `  section[${i}] lineNumbers: countBy=${sec.lineNumbers.countBy} start=${sec.lineNumbers.start}`,
+      );
+    }
     for (const key of ["default", "first", "even"] as const) {
       const blocks = sec.headers?.[key];
       if (!blocks?.length) continue;
@@ -72,6 +86,19 @@ async function main() {
   }
   console.log("  header table blocks:", hfTableBlocks);
   console.log("  HF paragraphs with boxBorder:", hfBoxBorderParas);
+
+  let sampleGridPara: string | null = null;
+  node.descendants((n) => {
+    if (sampleGridPara || !n.isTextblock) return;
+    const f = n.attrs.format as { docGridSectionPitchTwips?: number } | null;
+    if (!f?.docGridSectionPitchTwips) return;
+    sampleGridPara = paragraphCss(f);
+    console.log(
+      "  sample grid paragraph lineBoxPx:",
+      lineBoxPx(f, lineMetricsContextFromFormat(f)),
+    );
+    console.log("  sample grid paragraphCss:", sampleGridPara);
+  });
 }
 
 void main();

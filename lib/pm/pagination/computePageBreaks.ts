@@ -1,5 +1,6 @@
 import { pageStride, type PageSetup } from "./pageSetup";
 import type { PageFrame, PageInfo } from "../format";
+import { computePageBreaksWithContext } from "./geometryPaginate";
 
 /** Hard break after a line: `true` for the next page, or the next odd/even page. */
 export type BreakKind = boolean | "odd" | "even";
@@ -27,6 +28,8 @@ export type LayoutLine = {
    * of multiple line spacing (e.g. 1.5 lines) under the text and only needs the text to fit.
    */
   slack?: number;
+  /** Word doc-grid row height (px); margin numbers use this instead of glyph-inflated bottom-top. */
+  rowHeight?: number;
 };
 
 export type ComputedBreak = {
@@ -38,7 +41,13 @@ export type ComputedBreak = {
 };
 
 /** Where a line ends up: page index and px from that page's top edge. */
-export type LinePlacement = { page: number; top: number; bottom: number; section?: number };
+export type LinePlacement = {
+  page: number;
+  top: number;
+  bottom: number;
+  section?: number;
+  rowHeight?: number;
+};
 
 export type ComputedLayout = {
   breaks: ComputedBreak[];
@@ -53,20 +62,7 @@ export type PaginateOptions = {
   numberStart?: (section: number) => number | undefined;
 };
 
-function blockBounds(lines: LayoutLine[]) {
-  const first = new Map<number, number>();
-  const last = new Map<number, number>();
-  lines.forEach((line, i) => {
-    if (line.block === undefined) return;
-    if (!first.has(line.block)) first.set(line.block, i);
-    last.set(line.block, i);
-  });
-  const firstOf = (i: number) =>
-    lines[i].block === undefined ? i : first.get(lines[i].block!)!;
-  const lastOf = (i: number) =>
-    lines[i].block === undefined ? i : last.get(lines[i].block!)!;
-  return { firstOf, lastOf };
-}
+export { computePageBreaksWithContext } from "./geometryPaginate";
 
 /**
  * Word-style pagination: a line that would cross the bottom of the page's
@@ -85,93 +81,24 @@ export function computePageBreaks(
   }),
   options: PaginateOptions = {},
 ): ComputedLayout {
-  const stride = pageStride(setup);
-  const { firstOf, lastOf } = blockBounds(lines);
-  const breaks: ComputedBreak[] = [];
-  const placements: LinePlacement[] = new Array(lines.length);
-  const pages: PageInfo[] = [];
-  let page = 0;
-  let shift = 0;
-  let pageStart = 0;
-  let forceNext: BreakKind = false;
-
-  const startPage = (index: number, section: number) => {
-    const prev = pages[pages.length - 1];
-    const first = !prev || prev.section !== section;
-    const restart = first ? options.numberStart?.(section) : undefined;
-    // Blank pages left by odd/even breaks belong to the previous section.
-    while (pages.length < index) {
-      const last = pages[pages.length - 1];
-      pages.push({
-        section: last?.section ?? section,
-        first: false,
-        number: (last?.number ?? 0) + 1,
-      });
-    }
-    const before = pages[pages.length - 1];
-    pages[index] = { section, first, number: restart ?? (before ? before.number + 1 : 1) };
+  const bound = {
+    getPageGeometry: (_pageIndex: number) => ({
+      width: setup.width,
+      height: setup.height,
+      gap: setup.gap,
+      sectionIndex: 0,
+      marginTop: setup.marginTop,
+      marginRight: setup.marginRight,
+      marginBottom: setup.marginBottom,
+      marginLeft: setup.marginLeft,
+      frames: [
+        {
+          left: setup.marginLeft,
+          width: setup.width - setup.marginLeft - setup.marginRight,
+        },
+      ],
+    }),
+    getFrame: frame,
   };
-  startPage(0, lines[0]?.section ?? 0);
-
-  const keepTarget = (i: number): number => {
-    let t = i;
-    const line = lines[t];
-    const first = firstOf(t);
-    const last = lastOf(t);
-    if (line.keepLines) {
-      t = first;
-    } else if (line.widowControl && last > first) {
-      if (last === t && last - first >= 2) t -= 1;
-      if (t - first === 1) t = first;
-    }
-    while (t === firstOf(t) && t > 0 && lines[t - 1].keepNext && !lines[t - 1].breakAfter) {
-      t = firstOf(t - 1);
-    }
-    return t > pageStart ? t : i;
-  };
-
-  const lineFrame = (line: LayoutLine, pageIndex: number) => {
-    const section = line.section ?? 0;
-    const base = pages[pageIndex];
-    return frame({
-      section,
-      number: base?.number ?? 1,
-      first: base?.section === section ? (base?.first ?? false) : false,
-    });
-  };
-
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    const pageBottom = page * stride + setup.height - lineFrame(line, page).bottom;
-    const overflows = line.bottom - (line.slack ?? 0) + shift > pageBottom + 0.5;
-    const breakBefore = !!line.breakBefore && i > pageStart && firstOf(i) === i;
-
-    if (forceNext || breakBefore || (overflows && i > pageStart)) {
-      const forced = !!forceNext || breakBefore;
-      const target = forced ? i : keepTarget(i);
-      page += 1;
-      if (forceNext === "odd" && (page + 1) % 2 === 0) page += 1;
-      if (forceNext === "even" && (page + 1) % 2 === 1) page += 1;
-      startPage(page, lines[target].section ?? 0);
-      const height = page * stride + lineFrame(lines[target], page).top - (lines[target].top + shift);
-      breaks.push({ lineIndex: target, height, forced });
-      shift += height;
-      pageStart = target;
-      forceNext = false;
-      i = target;
-    }
-
-    const placed = lines[i];
-    placements[i] = {
-      page,
-      top: placed.top + shift - page * stride,
-      bottom: placed.bottom + shift - page * stride,
-      section: placed.section ?? 0,
-    };
-    if (placed.breakAfter) forceNext = placed.breakAfter;
-    i += 1;
-  }
-
-  return { breaks, pageCount: page + 1, placements, pages };
+  return computePageBreaksWithContext(lines, bound, options, setup);
 }

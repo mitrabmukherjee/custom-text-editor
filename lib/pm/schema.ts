@@ -133,6 +133,9 @@ function blockDataAttrs(node: PMNode): Record<string, string> {
   if (format) {
     attrs.style = paragraphCss(format);
     attrs["data-pm-format"] = JSON.stringify(format);
+    if (format.docGridSectionPitchTwips) {
+      attrs["data-doc-grid"] = String(format.docGridSectionPitchTwips);
+    }
   }
   if (change) {
     attrs["data-para-change"] = JSON.stringify(change);

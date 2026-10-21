@@ -14,14 +14,17 @@ import {
   type LineNumbering,
   type PageInfo,
   type SectionLayout,
+  gridLineNumberPaddingTop,
 } from "@/lib/pm/format";
 import {
   pageStride,
   stackHeight,
+  stackHeightFromContext,
   type ChangeBalloon,
   type LinePlacement,
   type PageSetup,
 } from "@/lib/pm/pagination";
+import { buildPaginationContext, pageSetupForPage } from "@/lib/pm/word-layout/pageGeometry";
 import { displayColor } from "@/lib/pm/textColors";
 import type { CommentThread } from "@/lib/pm/comments";
 import { authorColor, REVISION_BAR_COLOR } from "@/lib/pm/track-changes";
@@ -76,13 +79,32 @@ function estimateBalloonHeight(label: string, charsPerLine: number): number {
   return BALLOON_CHROME + BALLOON_LINE * bodyLines;
 }
 
-function runContent(run: HFRun, page: number, pageCount: number): string {
+function runContent(
+  run: HFRun,
+  page: number,
+  pageCount: number,
+  sectionPages: number,
+): string {
   if (run.kind === "tab") return "";
-  if (run.kind === "field") return String(run.field === "PAGE" ? page : pageCount);
+  if (run.kind === "field") {
+    if (run.field === "PAGE") return String(page);
+    if (run.field === "SECTIONPAGES") return String(sectionPages);
+    return String(pageCount);
+  }
   return run.text;
 }
 
-function RunSpan({ run, page, pageCount }: { run: HFRun; page: number; pageCount: number }) {
+function RunSpan({
+  run,
+  page,
+  pageCount,
+  sectionPages,
+}: {
+  run: HFRun;
+  page: number;
+  pageCount: number;
+  sectionPages: number;
+}) {
   if (run.kind === "tab") return null;
   const style: CSSProperties = {
     ...runStyle(run),
@@ -91,7 +113,7 @@ function RunSpan({ run, page, pageCount }: { run: HFRun; page: number; pageCount
     textDecoration: run.underline ? "underline" : undefined,
     color: run.color ? displayColor(run.color) : undefined,
   };
-  return <span style={style}>{runContent(run, page, pageCount)}</span>;
+  return <span style={style}>{runContent(run, page, pageCount, sectionPages)}</span>;
 }
 
 /** A header/footer paragraph; text after each tab is placed at the paragraph's tab stops. */
@@ -99,10 +121,12 @@ function HFLine({
   paragraph,
   page,
   pageCount,
+  sectionPages,
 }: {
   paragraph: HFParagraph;
   page: number;
   pageCount: number;
+  sectionPages: number;
 }) {
   const segments: HFRun[][] = [[]];
   for (const run of paragraph.runs) {
@@ -111,7 +135,9 @@ function HFLine({
   }
   const stops = paragraph.format.tabs ?? [];
   const render = (runs: HFRun[]): ReactNode =>
-    runs.map((run, i) => <RunSpan key={i} run={run} page={page} pageCount={pageCount} />);
+    runs.map((run, i) => (
+      <RunSpan key={i} run={run} page={page} pageCount={pageCount} sectionPages={sectionPages} />
+    ));
   return (
     <div className="studio-hf-paragraph" style={paragraphStyle(paragraph.format)}>
       {render(segments[0])}
@@ -135,6 +161,7 @@ function HeaderFooter({
   blocks,
   page,
   pageCount,
+  sectionPages,
   style,
   editable,
   onEdit,
@@ -142,6 +169,7 @@ function HeaderFooter({
   blocks: HFBlock[] | undefined;
   page: number;
   pageCount: number;
+  sectionPages: number;
   style: CSSProperties;
   editable?: boolean;
   onEdit?: () => void;
@@ -179,7 +207,13 @@ function HeaderFooter({
                 <tr>
                   <td style={{ padding: 0, border: "none" }}>
                     {flow.map((p, j) => (
-                      <HFLine key={j} paragraph={p} page={page} pageCount={pageCount} />
+                      <HFLine
+                        key={j}
+                        paragraph={p}
+                        page={page}
+                        pageCount={pageCount}
+                        sectionPages={sectionPages}
+                      />
                     ))}
                   </td>
                 </tr>
@@ -188,7 +222,15 @@ function HeaderFooter({
           );
         }
         if (block.floating) return null;
-        return <HFLine key={i} paragraph={block} page={page} pageCount={pageCount} />;
+        return (
+          <HFLine
+            key={i}
+            paragraph={block}
+            page={page}
+            pageCount={pageCount}
+            sectionPages={sectionPages}
+          />
+        );
       })}
     </div>
   );
@@ -242,19 +284,26 @@ function Frames({
   textTop,
   page,
   pageCount,
+  sectionPages,
 }: {
   blocks: HFBlock[] | undefined;
   setup: PageSetup;
   textTop: number;
   page: number;
   pageCount: number;
+  sectionPages: number;
 }) {
   const framed = hfSetParagraphs(blocks).filter((p) => p.frame) ?? [];
   return (
     <>
       {framed.map((p, i) => (
         <div key={i} className="studio-hf studio-hf-frame" style={frameStyle(p.frame!, setup, textTop)}>
-          <HFLine paragraph={p} page={page} pageCount={pageCount} />
+          <HFLine
+            paragraph={p}
+            page={page}
+            pageCount={pageCount}
+            sectionPages={sectionPages}
+          />
         </div>
       ))}
     </>
@@ -495,32 +544,73 @@ export function StudioPageBackgrounds({
   onBalloonAction,
   onBalloonMenu,
 }: Props) {
-  const stride = pageStride(setup);
-  const textWidth = setup.width - setup.marginLeft - setup.marginRight;
   const allSections = sections.length ? sections : layout ? [layout] : [];
+  const sectionPageCounts = new Map<number, number>();
+  for (const p of pages) {
+    sectionPageCounts.set(p.section, (sectionPageCounts.get(p.section) ?? 0) + 1);
+  }
+  const pagCtx = layout ? buildPaginationContext(layout, allSections, setup) : null;
+  const stackH = pagCtx
+    ? stackHeightFromContext(pagCtx, pages, pageCount, setup)
+    : stackHeight(setup, pageCount);
+  const stride = pageStride(setup);
   const anyLineNumbers = allSections.find((s) => s.lineNumbers)?.lineNumbers;
-  const barX = anyLineNumbers
-    ? setup.marginLeft - anyLineNumbers.distance - 30
-    : setup.marginLeft - 14;
   const numbered = lineNumbersByPage(allSections, lines);
+  const pageTops: number[] = [];
+  let y = 0;
+  for (let p = 0; p < pageCount; p++) {
+    pageTops.push(y);
+    const info = pages[p] ?? { section: 0, first: p === 0, number: p + 1 };
+    const ps = pageSetupForPage(info, allSections, setup);
+    y += ps.height + ps.gap;
+  }
   return (
     <div
       className="studio-page-stack"
       aria-hidden
-      style={{ width: setup.width + markupWidth, height: stackHeight(setup, pageCount) }}
+      style={{ width: setup.width + markupWidth, height: stackH }}
     >
       {Array.from({ length: pageCount }, (_, i) => {
         const info: PageInfo = pages[i] ?? { section: 0, first: i === 0, number: i + 1 };
+        const sectionPages = sectionPageCounts.get(info.section) ?? pageCount;
+        const pageSetup = pageSetupForPage(info, allSections, setup);
         const section = allSections[Math.min(info.section, allSections.length - 1)] ?? layout ?? {};
+        const cols = section.columns?.count ?? 1;
+        const colSpace = section.columns?.space ?? 0;
+        const contentW = pageSetup.width - pageSetup.marginLeft - pageSetup.marginRight;
+        const colW = cols > 1 ? (contentW - colSpace * (cols - 1)) / cols : contentW;
         const evenAndOdd = !!layout?.evenAndOddHeaders;
         const header = headerFooterFor(section.headers, section, info, evenAndOdd);
         const footer = headerFooterFor(section.footers, section, info, evenAndOdd);
+        const headerDist = section.headerDistance ?? 48;
+        const footerDist = section.footerDistance ?? 48;
+        const barX = anyLineNumbers
+          ? pageSetup.marginLeft - anyLineNumbers.distance - 30
+          : pageSetup.marginLeft - 14;
         return (
         <div
           key={i}
           className="studio-page-surface"
-          style={{ top: i * stride, width: setup.width + markupWidth, height: setup.height }}
+          style={{
+            top: pageTops[i] ?? i * stride,
+            width: pageSetup.width + markupWidth,
+            height: pageSetup.height,
+          }}
         >
+          {cols > 1
+            ? Array.from({ length: cols }, (_, c) => (
+                <span
+                  key={c}
+                  className="studio-column-guide"
+                  style={{
+                    left: pageSetup.marginLeft + c * (colW + colSpace),
+                    width: colW,
+                    top: pageSetup.marginTop,
+                    height: pageSetup.height - pageSetup.marginTop - pageSetup.marginBottom,
+                  }}
+                />
+              ))
+            : null}
           {changeBarsFor(changedLines, i).map((bar) => (
             <span
               key={bar.top}
@@ -535,7 +625,7 @@ export function StudioPageBackgrounds({
           ))}
           {markupWidth ? (
             <MarkupPane
-              setup={setup}
+              setup={pageSetup}
               balloons={balloons}
               page={i}
               width={markupWidth}
@@ -551,7 +641,8 @@ export function StudioPageBackgrounds({
                 blocks={header}
                 page={info.number}
                 pageCount={pageCount}
-                style={{ top: section.headerDistance ?? 48, left: setup.marginLeft, width: textWidth }}
+                sectionPages={sectionPages}
+                style={{ top: headerDist, left: pageSetup.marginLeft, width: contentW }}
                 editable={!readOnly && !!onHeaderFooterEdit}
                 onEdit={() => onHeaderFooterEdit?.(info, "header")}
               />
@@ -559,23 +650,26 @@ export function StudioPageBackgrounds({
                 blocks={footer}
                 page={info.number}
                 pageCount={pageCount}
-                style={{ bottom: section.footerDistance ?? 48, left: setup.marginLeft, width: textWidth }}
+                sectionPages={sectionPages}
+                style={{ bottom: footerDist, left: pageSetup.marginLeft, width: contentW }}
                 editable={!readOnly && !!onHeaderFooterEdit}
                 onEdit={() => onHeaderFooterEdit?.(info, "footer")}
               />
               <Frames
                 blocks={header}
-                setup={setup}
-                textTop={section.headerDistance ?? 48}
+                setup={pageSetup}
+                textTop={headerDist}
                 page={info.number}
                 pageCount={pageCount}
+                sectionPages={sectionPages}
               />
               <Frames
                 blocks={footer}
-                setup={setup}
-                textTop={setup.height - (section.footerDistance ?? 48) - headerFooterHeight(footer)}
+                setup={pageSetup}
+                textTop={pageSetup.height - footerDist - headerFooterHeight(footer)}
                 page={info.number}
                 pageCount={pageCount}
+                sectionPages={sectionPages}
               />
             </>
           ) : (
@@ -586,21 +680,27 @@ export function StudioPageBackgrounds({
               Page {info.number}
             </span>
           )}
-          {(numbered.get(i) ?? []).map(({ n, line, ln }) => (
-            <span
-              key={`${n}:${line.top}`}
-              className="studio-line-number"
-              style={{
-                top: line.top,
-                height: line.bottom - line.top,
-                lineHeight: `${line.bottom - line.top}px`,
-                right: setup.width + markupWidth - setup.marginLeft + ln.distance,
-                ...runStyle(ln),
-              }}
-            >
-              {n}
-            </span>
-          ))}
+          {(numbered.get(i) ?? []).map(({ n, line, ln }) => {
+            const section = sections[Math.min(line.section ?? 0, sections.length - 1)];
+            const grid = section?.docGridLinePitch != null;
+            const slotHeight = line.rowHeight ?? line.bottom - line.top;
+            const padTop = grid ? gridLineNumberPaddingTop(slotHeight, ln.fontSize ?? 12) : 0;
+            return (
+              <span
+                key={`${n}:${line.top}`}
+                className="studio-line-number"
+                style={{
+                  top: line.top,
+                  height: slotHeight,
+                  paddingTop: padTop || undefined,
+                  right: pageSetup.width + markupWidth - pageSetup.marginLeft + ln.distance,
+                  ...runStyle(ln),
+                }}
+              >
+                {n}
+              </span>
+            );
+          })}
         </div>
         );
       })}

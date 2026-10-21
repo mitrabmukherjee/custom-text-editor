@@ -8,7 +8,9 @@
     "start": "next start -p 3000",
     "lint": "eslint",
     "typecheck": "next typegen && tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "word-layout-golden": "tsx scripts/word-layout-golden.ts",
+    "papasotiriou-layout-golden": "tsx scripts/papasotiriou-layout-golden.ts"
   },
   "dependencies": {
     "@xmldom/xmldom": "^0.9.12",

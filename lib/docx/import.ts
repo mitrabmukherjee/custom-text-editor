@@ -1091,21 +1091,36 @@ type ImageJSON = {
   vmlAnchor?: VmlAnchorJSON | null;
 };
 
-/** `w:drawing` (inline or anchored picture), shown inline. */
+/** `w:drawing` inline or anchored (`wp:anchor`) picture. */
 function drawingImage(drawing: XElement, ctx: Context): ImageJSON | null {
   const blip = firstNS(drawing, A_NS, "blip");
   const id = blip && (blip.getAttributeNS(R_NS, "embed") || blip.getAttribute("r:embed"));
   const src = id ? ctx.images.get(id) : undefined;
   if (!src) return null;
-  const extent = firstNS(drawing, WP_NS, "extent");
+  const inline = firstNS(drawing, WP_NS, "inline");
+  const anchor = firstNS(drawing, WP_NS, "anchor");
+  const extent = firstNS(inline ?? anchor ?? drawing, WP_NS, "extent");
   const cx = Number(extent?.getAttribute("cx"));
   const cy = Number(extent?.getAttribute("cy"));
   const docPr = firstNS(drawing, WP_NS, "docPr");
+  const posH = anchor ? firstNS(anchor, WP_NS, "positionH") : null;
+  const posV = anchor ? firstNS(anchor, WP_NS, "positionV") : null;
+  const offsetPx = (parent: XElement | null) => {
+    const el = parent ? child(parent, "posOffset") : null;
+    const emu = el ? Number(el.textContent ?? 0) : 0;
+    return emu ? Math.round(emu / EMU_PER_PX) : null;
+  };
+  const anchorX =
+    posH && attr(posH, "relativeFrom") === "column" ? offsetPx(posH) : null;
+  const anchorY =
+    posV && attr(posV, "relativeFrom") === "paragraph" ? offsetPx(posV) : null;
   return {
     src,
     alt: docPr?.getAttribute("descr") || docPr?.getAttribute("title") || "",
     width: cx ? Math.round(cx / EMU_PER_PX) : null,
     height: cy ? Math.round(cy / EMU_PER_PX) : null,
+    anchorX,
+    anchorY,
   };
 }
 
@@ -1367,7 +1382,10 @@ function walkParagraph(p: XElement, blocks: Block[], ctx: Context) {
     numId && numId !== "0" ? { ...ctx.listLevel(numId, ilvl), level: ilvl } : undefined;
   const { styleId, format } = resolveParagraph(pPr, ctx, !!list);
   const attachVmlSignature = !!(ctx.pendingVmlSignature && isSignatureUnderlineParagraph(p));
-  const paragraphFormat = attachVmlSignature ? { ...format, keepLines: true } : format;
+  const paragraphFormat = withDocGridParagraphFormat(
+    attachVmlSignature ? { ...format, keepLines: true } : format,
+    ctx,
+  );
   const frame = parseFrame(child(pPr, "framePr"));
   const level = headingLevel(ctx.styles.styleName(styleId));
   const paraChange = paragraphChange(pPr, paragraphFormat, !!list, ctx);
@@ -1583,6 +1601,40 @@ function walkTable(tbl: XElement, ctx: Context): NodeJSON | null {
   };
 }
 
+function inlineText(node: NodeJSON): string {
+  let t = "";
+  for (const child of node.content ?? []) {
+    if (child.type === "text" && child.text) t += child.text;
+    else if (child.content) t += inlineText(child);
+  }
+  return t;
+}
+
+/** Word often emits long runs of empty `w:p` as vertical space; one row is enough. */
+function collapseConsecutiveEmptyBlocks(blocks: Block[]): Block[] {
+  const out: Block[] = [];
+  for (const block of blocks) {
+    const n = block.node;
+    const empty =
+      !block.list &&
+      n.type === "paragraph" &&
+      !n.attrs?.floating &&
+      !n.attrs?.frame &&
+      !inlineText(n).trim();
+    const prev = out[out.length - 1];
+    const prevEmpty =
+      prev &&
+      !prev.list &&
+      prev.node.type === "paragraph" &&
+      !prev.node.attrs?.floating &&
+      !prev.node.attrs?.frame &&
+      !inlineText(prev.node).trim();
+    if (empty && prevEmpty) continue;
+    out.push(block);
+  }
+  return out;
+}
+
 /**
  * Group consecutive list paragraphs into (nested) bullet/ordered lists. Numbering
  * continues across lists that share an abstract numbering, as in Word: each level counts
@@ -1664,10 +1716,11 @@ function hfProps(run: RawRun, mark: ParagraphFormat): HFRunProps {
   });
 }
 
-function fieldName(instr: string): "PAGE" | "NUMPAGES" | null {
+function fieldName(instr: string): "PAGE" | "NUMPAGES" | "SECTIONPAGES" | null {
   const name = instr.trim().split(/\s+/)[0]?.toUpperCase();
   if (name === "PAGE") return "PAGE";
-  if (name === "NUMPAGES" || name === "SECTIONPAGES") return "NUMPAGES";
+  if (name === "SECTIONPAGES") return "SECTIONPAGES";
+  if (name === "NUMPAGES") return "NUMPAGES";
   return null;
 }
 
@@ -1877,7 +1930,6 @@ function sectPrColumnCount(sectPr: XElement): number {
   return num(child(sectPr, "cols"), "num") ?? 1;
 }
 
-/** Page size and columns only — margin/header-only section changes stay on the same page in Word. */
 function sectPrPageSizeKey(sectPr: XElement): string {
   const pgSz = child(sectPr, "pgSz");
   return [attr(pgSz, "w"), attr(pgSz, "h"), String(sectPrColumnCount(sectPr))].join("|");
@@ -1910,7 +1962,12 @@ async function parseSection(
     headers: await parseHeaderFooterSet(sectPr, "headerReference", zip, rels, ctx),
     footers: await parseHeaderFooterSet(sectPr, "footerReference", zip, rels, ctx),
     titlePage: toggle(child(sectPr, "titlePg")) || undefined,
-    lineNumbers: parseLineNumbers(sectPr, ctx.styles),
+    lineNumbers: (() => {
+      const parsed = parseLineNumbers(sectPr, ctx.styles);
+      if (parsed) return parsed;
+      const pitch = num(child(sectPr, "docGrid"), "linePitch");
+      return pitch === 360 ? inferLineNumbersFromDocGrid(360) : null;
+    })(),
     pageNumberStart: num(child(sectPr, "pgNumType"), "start"),
     columns:
       colCount > 1 ? { count: colCount, space: twipsPx(num(cols, "space")) ?? 48 } : undefined,
@@ -1966,6 +2023,25 @@ function parsePageSetup(sectPr: XElement | undefined): PageSetup | undefined {
     marginLeft: px(pgMar, "left", d.marginLeft),
     gap: d.gap,
   };
+}
+
+/** Display-only line numbers when Word shows a 360-twips grid but omits `w:lnNumType`. */
+export function inferLineNumbersFromDocGrid(linePitchTwips: number): LineNumbering {
+  const pitchPx = linePitchTwips / TWIPS_PER_PX;
+  return {
+    countBy: 5,
+    start: 1,
+    restart: "newPage",
+    distance: pitchPx,
+    fontFamily: "Courier New",
+    fontSize: 12,
+  };
+}
+
+function withDocGridParagraphFormat(format: ParagraphFormat, ctx: Context): ParagraphFormat {
+  const pitch = ctx.sections[ctx.sectionIndex]?.layout?.docGridLinePitch;
+  if (!pitch) return format;
+  return { ...format, docGridSectionPitchTwips: pitch };
 }
 
 function parseLineNumbers(sectPr: XElement, styles: StyleSheet): LineNumbering | null {
@@ -2031,7 +2107,12 @@ export async function importDocx(
 
   const blocks: Block[] = [];
   walkBody(body, blocks, ctx);
-  const content = groupLists(blocks);
+  const preserveGridEmptyRows = ctx.sections.some(
+    (s) => s.layout?.docGridLinePitch || s.layout?.lineNumbers,
+  );
+  const content = groupLists(
+    preserveGridEmptyRows ? blocks : collapseConsecutiveEmptyBlocks(blocks),
+  );
   if (!content.length) content.push({ type: "paragraph" });
 
   const last = ctx.sections[ctx.sections.length - 1];
@@ -2041,6 +2122,10 @@ export async function importDocx(
   if (bodySectPr && pageSetup) {
     layout = defined({
       ...last.layout,
+      compat: {
+        compatibilityMode: ctx.settings.compatibilityMode,
+        htmlAutoSpacing: ctx.settings.htmlAutoSpacing,
+      },
       defaultTabStop:
         ctx.settings.defaultTabStop === undefined
           ? undefined
@@ -2049,6 +2134,7 @@ export async function importDocx(
         (ctx.settings.compatibilityMode ?? 0) >= 15 ? JUSTIFY_SHRINK : undefined,
       evenAndOddHeaders: ctx.settings.evenAndOddHeaders || undefined,
       styles: ctx.styles.definitions(ctx.settings),
+      layoutEngine: true,
     }) as DocumentLayout;
   }
 

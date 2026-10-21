@@ -1,0 +1,32 @@
+{
+  "fixture": "papasotiriou-may-2013.layout-golden.json",
+  "pageCount": 6,
+  "lineCount": 186,
+  "lineAnchorHash": "279a4799cabd6b8c",
+  "perPageLines": [
+    40,
+    32,
+    36,
+    36,
+    36,
+    6
+  ],
+  "breakLineIndices": [
+    40,
+    72,
+    108,
+    144,
+    180
+  ],
+  "pages12": {
+    "pageCount": 6,
+    "perPageLines": [
+      40,
+      32
+    ],
+    "breakLineIndices": [
+      40
+    ],
+    "lineAnchorHashPages12": "659e8c51c543ebcb"
+  }
+}

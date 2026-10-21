@@ -7,19 +7,44 @@ import {
   type PageInfo,
   type ParagraphFormat,
   type SectionStart,
-  paragraphLineHeightPx,
+  docGridPitchPxFromTwips,
+  lineBoxPx,
+  lineBoxSlack,
+  lineMetricsContextFromFormat,
+  resolveLineMetrics,
 } from "../format";
 import { collectComments } from "../comments";
 import { collectChanges, type ChangeType } from "../track-changes/changes";
 import { SKIP_TRACKING } from "../track-changes/plugin";
 import {
   computePageBreaks,
+  computePageBreaksWithContext,
   type BreakKind,
   type LayoutLine,
   type LinePlacement,
 } from "./computePageBreaks";
 import { stackHeight, type PageSetup } from "./pageSetup";
+import { stackHeightFromContext } from "./geometryPaginate";
+import { inlineDocPos } from "../word-layout/positions";
+import type { PaginationContext } from "../word-layout/types";
+import {
+  wordLayoutCompareMode,
+  wordLayoutEngineDrivesUI,
+  wordLayoutForDocument,
+} from "../word-layout/constants";
+import { measureWithEngine } from "./engineMeasure";
+import { sectionsOf } from "../sections";
+import { diffLayouts } from "./layoutDiff";
+import { gridStackTop } from "./gridStack";
+import { blockHasVisibleText, textNodeHiddenForLayout } from "./visibleMarkup";
+
+import type { SectionLayout } from "../format";
 import { columnCount, tableElementAt, trimTableColumnDom } from "../tableColumnDom";
+
+/** Court transcripts: margin line numbers and/or doc grid — DOM wrap stays authoritative. */
+function transcriptGridDocument(sections: SectionLayout[]): boolean {
+  return sections.some((s) => s.docGridLinePitch || s.lineNumbers);
+}
 
 export type PageBreakSpec = {
   pos: number;
@@ -66,18 +91,25 @@ export type PaginationLayout = {
 type PaginationState = {
   breaks: PageBreakSpec[];
   tabs: TabWidth[];
+  lineWraps: number[];
   pageCount: number;
   decorations: DecorationSet;
 };
 
-type PaginationMeta = Partial<Pick<PaginationState, "breaks" | "tabs" | "pageCount">>;
+type PaginationMeta = Partial<Pick<PaginationState, "breaks" | "tabs" | "pageCount">> & {
+  lineWraps?: number[];
+};
 
 export type PaginationConfig = {
   getSetup: () => PageSetup;
   getFrame: (page: PageInfo) => PageFrame;
+  getPaginationContext?: () => PaginationContext;
+  hasWordLayout?: () => boolean;
   getDefaultTabStop: () => number;
   /** `pageNumberStart` of a section, if it restarts page numbering. */
   getNumberStart?: (section: number) => number | undefined;
+  /** `w:docGrid w:linePitch` for a section (twips). */
+  getDocGridLinePitchTwips?: (section: number) => number | undefined;
   getMarkupFilter?: () => MarkupFilter;
   onLayout?: (layout: PaginationLayout) => void;
 };
@@ -85,6 +117,7 @@ export type PaginationConfig = {
 export const paginationKey = new PluginKey<PaginationState>("pagination");
 
 const WIDGET_CLASS = "pm-page-break-widget";
+const ENGINE_BREAK_CLASS = "pm-engine-line-break";
 const TAB_SELECTOR = "span.pm-tab";
 
 function changeSelector(filter: MarkupFilter) {
@@ -115,7 +148,12 @@ function rowSpacer(height: number, colspan: number) {
   return row;
 }
 
-function buildDecorations(doc: PMNode, breaks: PageBreakSpec[], tabs: TabWidth[]) {
+function buildDecorations(
+  doc: PMNode,
+  breaks: PageBreakSpec[],
+  tabs: TabWidth[],
+  lineWraps: number[] = [],
+) {
   const decos: Decoration[] = breaks.map((b) =>
     Decoration.widget(
       b.pos,
@@ -126,7 +164,12 @@ function buildDecorations(doc: PMNode, breaks: PageBreakSpec[], tabs: TabWidth[]
         const el = inTable ? rowSpacer(b.height, colspan) : document.createElement("span");
         el.classList.add(WIDGET_CLASS);
         el.contentEditable = "false";
-        if (!inTable) el.style.height = `${b.height}px`;
+        if (!inTable) {
+          el.style.height = `${b.height}px`;
+          el.style.display = "inline-block";
+          el.style.width = "100%";
+          el.style.verticalAlign = "top";
+        }
         el.dataset.page = String(b.page);
         if (b.forced) el.dataset.forced = "";
         return el;
@@ -144,6 +187,20 @@ function buildDecorations(doc: PMNode, breaks: PageBreakSpec[], tabs: TabWidth[]
     if (node?.type.name !== "tab") continue;
     decos.push(Decoration.node(t.pos, t.pos + 1, { style: `width: ${t.width}px` }));
   }
+  for (const pos of lineWraps) {
+    decos.push(
+      Decoration.widget(
+        pos,
+        () => {
+          const el = document.createElement("span");
+          el.className = ENGINE_BREAK_CLASS;
+          el.contentEditable = "false";
+          return el;
+        },
+        { side: -1, ignoreSelection: true, key: `ew:${pos}` },
+      ),
+    );
+  }
   return DecorationSet.create(doc, decos);
 }
 
@@ -155,21 +212,43 @@ export function paginationPlugin(config: PaginationConfig) {
   return new Plugin<PaginationState>({
     key: paginationKey,
     state: {
-      init: () => ({ breaks: [], tabs: [], pageCount: 1, decorations: DecorationSet.empty }),
+      init: () => ({
+        breaks: [],
+        tabs: [],
+        lineWraps: [],
+        pageCount: 1,
+        decorations: DecorationSet.empty,
+      }),
       apply(tr, prev, _old, newState) {
         const meta = tr.getMeta(paginationKey) as PaginationMeta | undefined;
         if (meta) {
-          const next = { ...prev, ...meta };
+          const next = {
+            ...prev,
+            ...meta,
+            lineWraps: meta.lineWraps ?? prev.lineWraps,
+          };
           if (tr.docChanged && !meta.tabs) {
             next.tabs = prev.tabs.map((t) => ({ ...t, pos: tr.mapping.map(t.pos, 1) }));
           }
-          return { ...next, decorations: buildDecorations(newState.doc, next.breaks, next.tabs) };
+          if (tr.docChanged && meta.lineWraps === undefined) {
+            next.lineWraps = prev.lineWraps.map((p) => tr.mapping.map(p, -1));
+          }
+          return {
+            ...next,
+            decorations: buildDecorations(
+              newState.doc,
+              next.breaks,
+              next.tabs,
+              next.lineWraps,
+            ),
+          };
         }
         if (!tr.docChanged) return prev;
         return {
           ...prev,
           breaks: prev.breaks.map((b) => ({ ...b, pos: tr.mapping.map(b.pos, -1) })),
           tabs: prev.tabs.map((t) => ({ ...t, pos: tr.mapping.map(t.pos, 1) })),
+          lineWraps: prev.lineWraps.map((p) => tr.mapping.map(p, -1)),
           decorations: prev.decorations.map(tr.mapping, tr.doc),
         };
       },
@@ -181,9 +260,12 @@ export function paginationPlugin(config: PaginationConfig) {
   });
 }
 
+type EngineLineRef = { kind: "engine"; pos: number; textOffset: number };
+
 type LineRef =
   | { kind: "block"; pos: number }
-  | { kind: "inline"; pos: number; el: HTMLElement; contentTop: number };
+  | { kind: "inline"; pos: number; el: HTMLElement; contentTop: number }
+  | EngineLineRef;
 
 type MeasuredLine = LayoutLine & { ref: LineRef; numbered: boolean };
 
@@ -195,13 +277,18 @@ function textNodesOf(el: HTMLElement): Text[] {
   for (let n = walker.nextNode(); n; n = walker.nextNode()) {
     if (!n.textContent) continue;
     if (n.parentElement?.closest(`.${WIDGET_CLASS}`)) continue;
+    if (textNodeHiddenForLayout(n as Text)) continue;
     out.push(n as Text);
   }
   return out;
 }
 
+function lineMergeGapPx(scale: number): number {
+  return Math.max(2, 2 * scale);
+}
+
 /** Visual lines of a text block, as merged text rects in client coordinates. */
-function textLines(el: HTMLElement): Box[] {
+function textLines(el: HTMLElement, scale = 1): Box[] {
   const range = document.createRange();
   const rects: Box[] = [];
   for (const node of textNodesOf(el)) {
@@ -219,9 +306,10 @@ function textLines(el: HTMLElement): Box[] {
   }
   rects.sort((a, b) => a.top - b.top);
   const lines: Box[] = [];
+  const mergeGap = lineMergeGapPx(scale);
   for (const r of rects) {
     const last = lines[lines.length - 1];
-    if (last && r.top < last.bottom - 2) {
+    if (last && r.top < last.bottom - mergeGap) {
       last.top = Math.min(last.top, r.top);
       last.bottom = Math.max(last.bottom, r.bottom);
     } else {
@@ -247,8 +335,29 @@ function clientScale(dom: HTMLElement, rect: DOMRect): number {
   return Number.isFinite(scale) && scale > 0 ? scale : 1;
 }
 
+/** Client y → CSS px from the top of page 1, ignoring page-break spacer widgets. */
+function naturalYFromDom(dom: HTMLElement, domRect: DOMRect, scale: number): (y: number) => number {
+  const originY = domRect.top;
+  const widgets: Box[] = Array.from(
+    dom.querySelectorAll<HTMLElement>(`.${WIDGET_CLASS}`),
+  ).map((el) => {
+    const r = el.getBoundingClientRect();
+    return { top: r.top, bottom: r.bottom };
+  });
+  return (y: number) => {
+    let above = 0;
+    for (const w of widgets) if (w.bottom <= y + 0.5) above += w.bottom - w.top;
+    return (y - originY - above) / scale;
+  };
+}
+
 /** Document position of the first character rendered on the line at `contentTop`. */
-function lineStartPos(view: EditorView, el: HTMLElement, contentTop: number): number | null {
+function lineStartPos(
+  view: EditorView,
+  el: HTMLElement,
+  contentTop: number,
+  scale = 1,
+): number | null {
   const range = document.createRange();
   const charTop = (node: Text, i: number) => {
     range.setStart(node, i);
@@ -256,7 +365,7 @@ function lineStartPos(view: EditorView, el: HTMLElement, contentTop: number): nu
     const rects = range.getClientRects();
     return rects.length ? rects[rects.length - 1].top : -Infinity;
   };
-  const threshold = contentTop - 2;
+  const threshold = contentTop - lineMergeGapPx(scale);
   for (const node of textNodesOf(el)) {
     const len = node.length;
     if (charTop(node, len - 1) < threshold) continue;
@@ -409,6 +518,20 @@ function sameTabs(a: TabWidth[], b: TabWidth[]) {
   );
 }
 
+function sameLineWraps(a: number[], b: number[]) {
+  return a.length === b.length && a.every((p, i) => p === b[i]);
+}
+
+type ApplyLayoutOptions = {
+  lineWraps?: number[];
+  engineTabs?: TabWidth[];
+  engineCompare?: {
+    domPageCount: number;
+    domBreaks: ReturnType<typeof computePageBreaks>["breaks"];
+    domLineCount: number;
+  };
+};
+
 /**
  * Maximum number of successive tab-width dispatches before we accept the current
  * widths and proceed to page-break computation.  Setting a tab's width can change
@@ -418,11 +541,24 @@ function sameTabs(a: TabWidth[], b: TabWidth[]) {
  */
 const MAX_TAB_ROUNDS = 4;
 
+/** Document position for a page-break decoration at the start of a measured line. */
+function breakDecorationPos(view: EditorView, ref: LineRef, scale = 1): number {
+  if (ref.kind === "block") return ref.pos;
+  if (ref.kind === "inline") {
+    return lineStartPos(view, ref.el, ref.contentTop, scale) ?? ref.pos + 1;
+  }
+  const block = view.state.doc.nodeAt(ref.pos);
+  if (ref.textOffset === 0 && block?.isTextblock) return ref.pos;
+  if (block?.isTextblock) return inlineDocPos(ref.pos, block, ref.textOffset);
+  return ref.pos;
+}
+
 class PaginationView {
   private frame = 0;
   private resizeDebounce = 0;
   private lastSignature = "";
   private tabRounds = 0;
+  private layoutRounds = 0;
   private lastDocSize = 0;
   private readonly resizeObserver: ResizeObserver;
 
@@ -473,6 +609,33 @@ class PaginationView {
         .setMeta("addToHistory", false)
         .setMeta(SKIP_TRACKING, true),
     );
+    const relayout =
+      meta.breaks !== undefined || meta.lineWraps !== undefined || meta.tabs !== undefined;
+    if (relayout && this.layoutRounds < 8) {
+      this.layoutRounds += 1;
+      this.schedule();
+    } else if (!relayout) {
+      this.layoutRounds = 0;
+    }
+  }
+
+  private usesEngineLayout(): boolean {
+    return (
+      wordLayoutEngineDrivesUI() &&
+      wordLayoutForDocument(this.config.hasWordLayout?.() ?? false)
+    );
+  }
+
+  private compareEngineLayout(): boolean {
+    return wordLayoutCompareMode(this.config.hasWordLayout?.() ?? false);
+  }
+
+  /** Apply tab widths from the word-layout engine. */
+  private applyEngineTabs(tabs: TabWidth[]): boolean {
+    const current = paginationKey.getState(this.view.state);
+    if (!current || sameTabs(current.tabs, tabs)) return false;
+    this.dispatch({ tabs });
+    return true;
   }
 
   /** Size every tab so it reaches its Word tab stop. Returns true if widths changed. */
@@ -519,6 +682,7 @@ class PaginationView {
     if (docSize !== this.lastDocSize) {
       this.lastDocSize = docSize;
       this.tabRounds = 0;
+      this.layoutRounds = 0;
     }
     if (dom.querySelector("tbody col")) {
       view.state.doc.descendants((node, pos) => {
@@ -530,25 +694,69 @@ class PaginationView {
     }
     const domRect = dom.getBoundingClientRect();
     if (domRect.height === 0) return;
-    if (this.layoutTabs()) return;
 
     const setup = this.config.getSetup();
-    const scale = clientScale(dom, domRect);
-    const originY = domRect.top;
-    const widgets: Box[] = Array.from(
-      dom.querySelectorAll<HTMLElement>(`.${WIDGET_CLASS}`),
-    ).map((el) => {
-      const r = el.getBoundingClientRect();
-      return { top: r.top, bottom: r.bottom };
-    });
-    /** Client y → CSS px from the top of page 1, ignoring page-break spacers. */
-    const natural = (y: number) => {
-      let above = 0;
-      for (const w of widgets) if (w.bottom <= y + 0.5) above += w.bottom - w.top;
-      return (y - originY - above) / scale;
+    const useEngine = this.usesEngineLayout();
+    const compareEngine = this.compareEngineLayout();
+    const cs = getComputedStyle(dom);
+    const contentWidthPx =
+      dom.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    const markup = this.config.getMarkupFilter?.() ?? ALL_MARKUP;
+    const includeDeletionText = markup.insertions;
+    const engineInput = {
+      doc: this.view.state.doc,
+      setup,
+      defaultTabStop: this.config.getDefaultTabStop(),
+      getDocGridLinePitchTwips: this.config.getDocGridLinePitchTwips,
+      contentWidthPx: Number.isFinite(contentWidthPx) && contentWidthPx > 0 ? contentWidthPx : undefined,
+      includeDeletionText,
     };
+    const engineMeasured =
+      useEngine || compareEngine ? measureWithEngine(engineInput) : undefined;
+    const sections = sectionsOf(view.state);
+    const gridTranscript = transcriptGridDocument(sections);
+
+    if (engineMeasured?.tabWidths.length && this.applyEngineTabs(engineMeasured.tabWidths)) {
+      return;
+    }
+
+    if (useEngine && engineMeasured && !gridTranscript) {
+      const current = paginationKey.getState(view.state);
+      const wraps = engineMeasured.lineWrapPositions;
+      if (current && !sameLineWraps(current.lineWraps, wraps)) {
+        this.dispatch({ lineWraps: wraps, tabs: engineMeasured.tabWidths });
+        return;
+      }
+      const scale = clientScale(dom, domRect);
+      const ctx = this.config.getPaginationContext?.();
+      const natural = naturalYFromDom(dom, domRect, scale);
+      this.applyLayout(
+        view,
+        dom,
+        domRect,
+        scale,
+        setup,
+        engineMeasured.lines,
+        engineMeasured.layout,
+        natural,
+        ctx,
+        {
+          lineWraps: wraps,
+          engineTabs: engineMeasured.tabWidths,
+        },
+      );
+      return;
+    }
+
+    if (this.layoutTabs()) {
+      return;
+    }
+    const scale = clientScale(dom, domRect);
+    const natural = naturalYFromDom(dom, domRect, scale);
 
     const lines: MeasuredLine[] = [];
+    /** Next stacked Y per section for Word doc-grid rows (resync after page gaps). */
+    const gridNextY = new Map<number, number>();
     let block = 0;
     let section = 0;
     view.state.doc.descendants((node, pos) => {
@@ -577,33 +785,87 @@ class PaginationView {
         return false;
       }
       if (node.type.spec.tableRole === "table") {
+        const pitchTwips = this.config.getDocGridLinePitchTwips?.(section);
+        const pitchPx = pitchTwips ? docGridPitchPxFromTwips(pitchTwips) : undefined;
         // Rows don't split across pages; a break before the first row goes before the table.
         node.forEach((row, offset, index) => {
           const rowPos = pos + 1 + offset;
           const el = view.nodeDOM(rowPos) as HTMLElement | null;
           if (!el) return;
           const r = el.getBoundingClientRect();
+          const cantSplit = !!row.attrs.cantSplit;
           let keepNext = false;
           row.descendants((cell) => {
             if (!cell.isTextblock) return;
             const f = cell.attrs.format as ParagraphFormat | null;
             if (f?.keepNext) keepNext = true;
           });
-          lines.push({
-            top: natural(r.top),
-            bottom: natural(r.bottom),
-            block: block++,
-            section,
-            ref: { kind: "block", pos: index === 0 ? pos : rowPos },
-            numbered: false,
-            keepNext,
-          });
+          const top = natural(r.top);
+          const rowH = (r.bottom - r.top) / scale;
+          const ref = { kind: "block" as const, pos: index === 0 ? pos : rowPos };
+          const pushGridRow = (naturalTop: number, keep: boolean) => {
+            const prev = gridNextY.get(section);
+            const rowTop = gridStackTop(naturalTop, prev);
+            gridNextY.set(section, rowTop + pitchPx!);
+            lines.push({
+              top: rowTop,
+              bottom: rowTop + pitchPx!,
+              block: block++,
+              section,
+              ref,
+              numbered: false,
+              keepNext: keep,
+              keepLines: cantSplit || undefined,
+              rowHeight: pitchPx,
+              slack: 0,
+            });
+          };
+          if (pitchPx) {
+            const steps = Math.max(1, Math.ceil(rowH / pitchPx));
+            for (let k = 0; k < steps; k++) {
+              pushGridRow(top, k === 0 && keepNext);
+            }
+          } else {
+            lines.push({
+              top,
+              bottom: top + rowH,
+              block: block++,
+              section,
+              ref,
+              numbered: false,
+              keepNext,
+              keepLines: cantSplit || undefined,
+            });
+          }
         });
         return false;
       }
       if (!node.isTextblock) return true;
       const el = view.nodeDOM(pos) as HTMLElement | null;
       if (!el) return false;
+
+      const format = node.attrs.format as ParagraphFormat | null;
+      const pitchTwips =
+        this.config.getDocGridLinePitchTwips?.(section) ?? format?.docGridSectionPitchTwips;
+      const metricsCtx = pitchTwips
+        ? { docGridLinePitchTwips: pitchTwips }
+        : lineMetricsContextFromFormat(format);
+      const metrics = resolveLineMetrics(format, metricsCtx);
+      const computedLh = parseFloat(getComputedStyle(el).lineHeight);
+      const lineHeight =
+        lineBoxPx(format, metricsCtx) ??
+        (Number.isFinite(computedLh) ? computedLh : undefined);
+      const gridRowHeight =
+        metricsCtx.docGridLinePitchTwips && lineHeight !== undefined ? lineHeight : undefined;
+
+      if (
+        !blockHasVisibleText(node, { includeDeletionText }) &&
+        !(node.attrs.frame && node.attrs.floating) &&
+        node.isTextblock &&
+        !gridRowHeight
+      ) {
+        return false;
+      }
 
       if (node.type.name === "paragraph" && node.attrs.frame && node.attrs.floating) {
         const wrap = el.classList.contains("pm-body-frame-wrap")
@@ -622,7 +884,6 @@ class PaginationView {
         return false;
       }
 
-      const format = node.attrs.format as ParagraphFormat | null;
       const keep = {
         block: block++,
         section,
@@ -632,37 +893,67 @@ class PaginationView {
         breakBefore: !!format?.pageBreakBefore,
         numbered: !format?.suppressLineNumbers,
       };
-      const computedLh = parseFloat(getComputedStyle(el).lineHeight);
-      const lineHeight =
-        paragraphLineHeightPx(format) ??
-        (Number.isFinite(computedLh) ? computedLh : undefined);
-      const multiple =
-        format?.lineRule === "auto" && (format.lineValue ?? 1) > 1 ? format.lineValue! : 1;
-      const slackOf = (height: number) => height - height / multiple;
-      const boxes = textLines(el);
+      const slackOf = (height: number, glyphs: number) =>
+        lineBoxSlack(height, glyphs, format, metricsCtx);
+      const boxes = textLines(el, scale);
       if (!boxes.length) {
         const box = contentBox(el, scale);
-        const top = natural(box.top);
-        const height = (box.bottom - box.top) / scale;
+        const measured = (box.bottom - box.top) / scale;
+        const naturalTop = natural(box.top);
+        const top = naturalTop;
+        const height = gridRowHeight ?? measured;
+        const bottom =
+          gridRowHeight ? Math.max(top + gridRowHeight, natural(box.bottom)) : top + height;
         lines.push({
           ...keep,
           top,
-          bottom: top + height,
-          slack: slackOf(height),
+          bottom,
+          slack: slackOf(gridRowHeight ?? height, measured),
+          rowHeight: gridRowHeight,
           ref: { kind: "block", pos },
+        });
+        return false;
+      }
+      if (gridRowHeight) {
+        boxes.forEach((box, i) => {
+          const glyphs = (box.bottom - box.top) / scale;
+          const naturalTop = natural(box.top);
+          const naturalBottom = natural(box.bottom);
+          const top = naturalTop;
+          const bottom = Math.max(top + gridRowHeight, naturalBottom);
+          lines.push({
+            ...keep,
+            top,
+            bottom,
+            slack: slackOf(gridRowHeight, glyphs),
+            rowHeight: gridRowHeight,
+            ref:
+              i === 0
+                ? { kind: "block", pos }
+                : { kind: "inline", pos, el, contentTop: box.top },
+          });
         });
         return false;
       }
       boxes.forEach((box, i) => {
         const glyphs = (box.bottom - box.top) / scale;
-        const height =
-          lineHeight !== undefined ? Math.max(lineHeight, glyphs) : glyphs;
-        const top = natural(box.top) - (height - glyphs) / 2;
+        const rowBox = gridRowHeight ?? lineHeight;
+        const naturalTop = natural(box.top);
+        let top: number;
+        if (metrics.topAlign) {
+          top = naturalTop;
+        } else {
+          const probe =
+            rowBox !== undefined ? Math.max(rowBox, glyphs) : glyphs;
+          top = naturalTop - (probe - glyphs) / 2;
+        }
+        const height = gridRowHeight ?? (rowBox !== undefined ? Math.max(rowBox, glyphs) : glyphs);
         lines.push({
           ...keep,
           top,
-          bottom: top + height,
-          slack: slackOf(height),
+          bottom: top + (gridRowHeight ?? height),
+          slack: slackOf(gridRowHeight ?? rowBox ?? height, glyphs),
+          rowHeight: gridRowHeight,
           ref:
             i === 0
               ? { kind: "block", pos }
@@ -672,31 +963,113 @@ class PaginationView {
       return false;
     });
 
-    const layout = computePageBreaks(lines, setup, this.config.getFrame, {
-      numberStart: this.config.getNumberStart,
+    const ctx = this.config.getPaginationContext?.();
+    const layout = ctx
+      ? computePageBreaksWithContext(lines, ctx, { numberStart: this.config.getNumberStart }, setup)
+      : computePageBreaks(lines, setup, this.config.getFrame, {
+          numberStart: this.config.getNumberStart,
+        });
+    this.applyLayout(view, dom, domRect, scale, setup, lines, layout, natural, ctx, {
+      lineWraps:
+        gridTranscript || !engineMeasured
+          ? []
+          : engineMeasured.lineWrapPositions,
+      engineTabs: engineMeasured?.tabWidths,
+      engineCompare:
+        compareEngine && engineMeasured
+          ? {
+              domPageCount: layout.pageCount,
+              domBreaks: layout.breaks,
+              domLineCount: lines.length,
+              engine: engineMeasured,
+            }
+          : undefined,
     });
-    const breaks: PageBreakSpec[] = [];
-    layout.breaks.forEach((b, i) => {
+  }
+
+  /** `natural` must map client Y through `naturalYFromDom` so markup aligns with layout lines after page-break widgets. */
+  private applyLayout(
+    view: EditorView,
+    dom: HTMLElement,
+    domRect: DOMRect,
+    scale: number,
+    setup: PageSetup,
+    lines: MeasuredLine[],
+    layout: ReturnType<typeof computePageBreaks>,
+    natural: (y: number) => number,
+    ctx?: PaginationContext,
+    options: ApplyLayoutOptions & {
+      engineCompare?: ApplyLayoutOptions["engineCompare"] & {
+        engine: ReturnType<typeof measureWithEngine>;
+      };
+    } = {},
+  ) {
+    const prev = paginationKey.getState(view.state);
+    const lineWraps = options.lineWraps ?? prev?.lineWraps ?? [];
+    const tabs = options.engineTabs ?? prev?.tabs ?? [];
+    if (options.engineCompare?.engine) {
+      const diff = diffLayouts(
+        {
+          pageCount: options.engineCompare.domPageCount,
+          breaks: options.engineCompare.domBreaks,
+          lineCount: options.engineCompare.domLineCount,
+        },
+        {
+          pageCount: options.engineCompare.engine.layout.pageCount,
+          breaks: options.engineCompare.engine.layout.breaks,
+          lineCount: options.engineCompare.engine.lines.length,
+        },
+      );
+      if (
+        typeof localStorage !== "undefined" &&
+        localStorage.getItem("debugPagination") === "1"
+      ) {
+        console.info("[pagination] engine vs DOM", diff);
+      }
+    }
+    if (
+      typeof localStorage !== "undefined" &&
+      localStorage.getItem("debugPagination") === "1"
+    ) {
+      console.info("[pagination]", {
+        lines: lines.length,
+        pageCount: layout.pageCount,
+        breaks: layout.breaks.map((b) => b.lineIndex),
+        engine: this.usesEngineLayout(),
+      });
+    }
+    const breaks: PageBreakSpec[] = layout.breaks.map((b, i) => {
       const ref = lines[b.lineIndex].ref;
-      const pos =
-        ref.kind === "block"
-          ? ref.pos
-          : (lineStartPos(view, ref.el, ref.contentTop) ?? ref.pos + 1);
-      breaks.push({ pos, height: b.height, page: i + 1, forced: b.forced });
+      return {
+        pos: breakDecorationPos(view, ref, scale),
+        height: b.height,
+        page: i + 1,
+        forced: b.forced,
+      };
     });
 
-    dom.style.minHeight = `${stackHeight(setup, layout.pageCount)}px`;
+    dom.style.minHeight = ctx
+      ? `${stackHeightFromContext(ctx, layout.pages, layout.pageCount, setup)}px`
+      : `${stackHeight(setup, layout.pageCount)}px`;
 
     const current = paginationKey.getState(view.state);
     if (
       current &&
-      (!sameBreaks(current.breaks, breaks) || current.pageCount !== layout.pageCount)
+      (!sameBreaks(current.breaks, breaks) ||
+        current.pageCount !== layout.pageCount ||
+        !sameLineWraps(current.lineWraps, lineWraps) ||
+        (options.engineTabs && !sameTabs(current.tabs, tabs)))
     ) {
-      this.dispatch({ breaks, pageCount: layout.pageCount });
+      this.dispatch({
+        breaks,
+        pageCount: layout.pageCount,
+        lineWraps,
+        ...(options.engineTabs ? { tabs } : {}),
+      });
       return;
     }
 
-    const placed = layout.placements.filter((_, i) => lines[i].numbered);
+    const placed = layout.placements.filter((_, i) => lines[i]?.numbered);
     const markup = markupLayout(
       view,
       dom,
@@ -729,5 +1102,6 @@ class PaginationView {
         ...markup,
       });
     }
+    this.layoutRounds = 0;
   }
 }

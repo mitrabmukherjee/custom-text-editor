@@ -11,6 +11,7 @@ import {
 import { fixTables } from "prosemirror-tables";
 import { EditorView } from "prosemirror-view";
 import { docJsonToPlainText, plainTextToDoc, type PlainTextMode } from "@/lib/serializers/plainText";
+import { ensureStudioLayout } from "./defaultLayout";
 import { characterFormatAt } from "./character";
 import { insertPageBreak, isMarkActive } from "./commands";
 import { type HeaderFooterTarget, setHeaderFooterText } from "./header-footer";
@@ -76,6 +77,8 @@ import {
   type PageSetup,
   type PaginationLayout,
 } from "./pagination";
+import { documentUsesLayoutEngine } from "./word-layout/constants";
+import { buildPaginationContext } from "./word-layout/pageGeometry";
 import { basePlugins } from "./plugins";
 import { pasteKey, type PasteMode } from "./plugins/paste";
 import { schema } from "./schema";
@@ -147,6 +150,7 @@ export class EditorController {
   } | null = null;
   private sectionCache: { doc: PMNode; sections: SectionLayout[] } | null = null;
   private readonly plugins: Plugin[];
+  private readonly paginationEnabled: boolean;
   private readonly listeners = new Set<TransactionListener>();
   private compositionRanges: { from: number; to: number }[] = [];
   private markupFilter: MarkupFilter = ALL_MARKUP;
@@ -155,6 +159,7 @@ export class EditorController {
     this.editable = options.editable;
     this.pageSetup = options.pageSetup ?? LETTER_PAGE_SETUP;
     this.pinPageSetup = !!options.pinPageSetup;
+    this.paginationEnabled = !!options.pageSetup;
     const initialTracking = { enabled: options.trackChanges, author: options.author };
 
     this.plugins = [
@@ -165,7 +170,11 @@ export class EditorController {
             paginationPlugin({
               getSetup: () => this.getPageSetup(),
               getFrame: (page) => this.getPageFrame(page),
+              getPaginationContext: () => this.getPaginationContext(),
+              hasWordLayout: () => documentUsesLayoutEngine(this.view.state.doc),
               getNumberStart: (section) => this.getSections()[section]?.pageNumberStart,
+              getDocGridLinePitchTwips: (section) =>
+                this.getDocGridLinePitchTwips(section),
               getDefaultTabStop: () => this.getLayout()?.defaultTabStop ?? DEFAULT_TAB_STOP,
               getMarkupFilter: () => this.markupFilter,
               onLayout: options.onLayout,
@@ -175,8 +184,12 @@ export class EditorController {
         : []),
     ];
 
+    const initialDoc = this.paginationEnabled
+      ? ensureStudioLayout(options.doc, this.pageSetup)
+      : options.doc;
+
     this.view = new EditorView(mount, {
-      state: this.createState(docFromJSON(options.doc)),
+      state: this.createState(docFromJSON(initialDoc)),
       editable: () => this.editable,
       dispatchTransaction: (tr) => this.dispatch(tr),
       attributes: (state) => {
@@ -302,12 +315,14 @@ export class EditorController {
 
   /** Replace the whole document and reset undo history. */
   load(json: DocJSON) {
-    this.view.updateState(this.createState(docFromJSON(json)));
+    const doc = this.paginationEnabled ? ensureStudioLayout(json, this.pageSetup) : json;
+    this.view.updateState(this.createState(docFromJSON(doc)));
     for (const listener of this.listeners) listener({ docChanged: true });
   }
 
   loadPlainText(plain: string) {
-    this.load(plainTextToDoc(plain));
+    const json = plainTextToDoc(plain);
+    this.load(this.paginationEnabled ? ensureStudioLayout(json, this.pageSetup) : json);
   }
 
   /** Replace the content in place (undoable, never tracked). */
@@ -629,6 +644,10 @@ export class EditorController {
     return this.sectionCache!.sections;
   }
 
+  getDocGridLinePitchTwips(section: number): number | undefined {
+    return this.getSections()[section]?.docGridLinePitch;
+  }
+
   /** Effective top/bottom margins of a page, grown to fit its header/footer. */
   getPageFrame(page: PageInfo = FIRST_PAGE): PageFrame {
     const setup = this.getPageSetup();
@@ -639,6 +658,10 @@ export class EditorController {
       this.frameCache = { setup, layout, sections, frame: pageFrames(setup, layout, sections) };
     }
     return this.frameCache!.frame(page);
+  }
+
+  getPaginationContext() {
+    return buildPaginationContext(this.getLayout(), this.getSections(), this.getPageSetup());
   }
 
   setPageSetup(setup: PageSetup) {

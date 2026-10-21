@@ -13,8 +13,10 @@ export type TranscriptEditorHandle = {
   getJson: () => DocJSON;
   /** Replace the document (resets undo history). */
   setJson: (json: DocJSON) => void;
-  /** Replace the content in place (undoable, never tracked). */
+  /** Replace the content in place (undoable, never tracked). Keeps document attrs (layout, comments). */
   setPlainText: (plain: string) => void;
+  /** Replace the whole document with plain text and default studio layout (resets undo). */
+  loadPlainText: (plain: string) => void;
   focus: () => void;
   importDocx: (buffer: ArrayBuffer) => Promise<void>;
   exportDocx: () => Promise<ArrayBuffer>;
